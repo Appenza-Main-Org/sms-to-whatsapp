@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Source SMS bubble (top-left) -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M30,32 L30,48 Q30,52 34,52 L42,52 L46,58 L46,52 L58,52 Q62,52 62,48 L62,32 Q62,28 58,28 L34,28 Q30,28 30,32 Z" />
+
+    <!-- SMS text line 1 -->
+    <path
+        android:fillColor="#128C7E"
+        android:pathData="M36,35 L56,35 L56,37 L36,37 Z" />
+
+    <!-- SMS text line 2 -->
+    <path
+        android:fillColor="#128C7E"
+        android:pathData="M36,41 L52,41 L52,43 L36,43 Z" />
+
+    <!-- Forward arrow -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M50,60 L50,64 L64,64 L64,58 L74,67 L64,76 L64,70 L50,70 Z" />
+
+    <!-- Target WhatsApp bubble (bottom-right) -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M58,56 Q58,54 60,54 L82,54 Q84,54 84,56 L84,76 Q84,78 82,78 L72,78 L66,84 L66,78 L60,78 Q58,78 58,76 Z" />
+
+    <!-- Check mark inside target bubble (drawn as filled polygon) -->
+    <path
+        android:fillColor="#25D366"
+        android:pathData="M64,66 L66,64 L69,67 L76,60 L78,62 L69,71 Z" />
+
+</vector>

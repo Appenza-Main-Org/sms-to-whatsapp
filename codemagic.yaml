@@ -1,0 +1,83 @@
+workflows:
+  android-debug-workflow:
+    name: Android Debug Build
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    environment:
+      vars:
+        PACKAGE_NAME: "com.ghareeb.smstowhatsapp"
+      java: 17
+    scripts:
+      - name: Set up local.properties
+        script: |
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > "$CM_BUILD_DIR/local.properties"
+      - name: Ensure Gradle wrapper is present
+        script: |
+          if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
+            echo "gradle-wrapper.jar missing — generating via pre-installed Gradle"
+            # Codemagic Mac instances have Gradle installed via SDKMAN
+            if command -v gradle &> /dev/null; then
+              gradle wrapper --gradle-version 8.11.1 --distribution-type bin
+            else
+              echo "Installing Gradle via SDKMAN"
+              curl -s "https://get.sdkman.io" | bash
+              source "$HOME/.sdkman/bin/sdkman-init.sh"
+              sdk install gradle 8.11.1
+              gradle wrapper --gradle-version 8.11.1 --distribution-type bin
+            fi
+          fi
+          chmod +x gradlew
+          ls -la gradle/wrapper/
+      - name: Build debug APK
+        script: |
+          ./gradlew assembleDebug --stacktrace
+    artifacts:
+      - app/build/outputs/**/*.apk
+      - app/build/outputs/**/mapping.txt
+    publishing:
+      email:
+        recipients:
+          - ghareeb@appenza-studio.com
+        notify:
+          success: true
+          failure: true
+
+  android-release-workflow:
+    name: Android Release Build (Unsigned)
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    environment:
+      vars:
+        PACKAGE_NAME: "com.ghareeb.smstowhatsapp"
+      java: 17
+    scripts:
+      - name: Set up local.properties
+        script: |
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > "$CM_BUILD_DIR/local.properties"
+      - name: Ensure Gradle wrapper is present
+        script: |
+          if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
+            echo "gradle-wrapper.jar missing — generating via pre-installed Gradle"
+            if command -v gradle &> /dev/null; then
+              gradle wrapper --gradle-version 8.11.1 --distribution-type bin
+            else
+              curl -s "https://get.sdkman.io" | bash
+              source "$HOME/.sdkman/bin/sdkman-init.sh"
+              sdk install gradle 8.11.1
+              gradle wrapper --gradle-version 8.11.1 --distribution-type bin
+            fi
+          fi
+          chmod +x gradlew
+          ls -la gradle/wrapper/
+      - name: Build release APK
+        script: |
+          ./gradlew assembleRelease --stacktrace
+    artifacts:
+      - app/build/outputs/**/*.apk
+    publishing:
+      email:
+        recipients:
+          - ghareeb@appenza-studio.com
+        notify:
+          success: true
+          failure: true
