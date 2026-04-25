@@ -54,7 +54,7 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Recipient: type GROUP to pick a WhatsApp group, or enter a phone number with country code (e.g. 201234567890)"
+            android:text="Recipient: enter a phone number with country code (e.g. 201234567890) for direct chat, OR leave as GROUP / any non-numeric text to open WhatsApp share sheet and pick a group"
             android:textSize="14sp"
             android:layout_marginBottom="4dp" />
 
@@ -90,7 +90,7 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Note: When a matching SMS is received, WhatsApp will open with the message pre-filled. Using GROUP mode: WhatsApp share sheet appears — tap the target group, then tap Send. Using phone number mode: the direct chat opens — tap Send."
+            android:text="Note: When a matching SMS arrives, a high-priority notification appears — tap it to open WhatsApp with the message pre-filled, then tap Send. (Android blocks apps from auto-sending WhatsApp messages without the official Business API, so one tap is always required.)"
             android:textSize="12sp"
             android:textStyle="italic" />
 

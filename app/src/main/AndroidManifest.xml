@@ -18,6 +18,9 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
+    <!-- Needed on Android 14+ so the forward notification can open WhatsApp from the background -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+
     <!-- Package visibility for WhatsApp (Android 11+) -->
     <queries>
         <package android:name="com.whatsapp" />
