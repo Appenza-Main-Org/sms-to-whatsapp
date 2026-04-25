@@ -127,7 +127,18 @@ class WhatsAppAutoSendService : AccessibilityService() {
                         return
                     }
                     if (tryScroll(root)) return
+                    return
                 }
+
+                // Already clicked target row. Before tapping Send, REQUIRE that the
+                // target name appears as a text node on this screen (i.e. the chat
+                // header shows "Pharmacy"). If it doesn't, we're on the wrong chat
+                // and must NOT send — better to fail silently than message a stranger.
+                if (!screenShowsTarget(root, target)) {
+                    Log.d(TAG, "[$trigger] Waiting for chat screen titled '$target'")
+                    return
+                }
+
                 if (clickSendButton(root)) {
                     Log.d(TAG, "[$trigger] Send tapped for group: '$target'")
                     showSentToast(target)
@@ -142,6 +153,24 @@ class WhatsAppAutoSendService : AccessibilityService() {
                 }
             }
         }
+    }
+
+    /**
+     * Returns true if any node in the active window has visible text exactly
+     * matching [target] (case- and whitespace-normalized). Used to confirm the
+     * chat header shows the intended group name before tapping Send.
+     */
+    private fun screenShowsTarget(root: AccessibilityNodeInfo, target: String): Boolean {
+        val normalized = normalize(target)
+        if (normalized.isEmpty()) return true
+        var found = false
+        walkTree(root) { n ->
+            if (found) return@walkTree
+            if (normalize(n.text?.toString()) == normalized) {
+                found = true
+            }
+        }
+        return found
     }
 
     /**
@@ -164,62 +193,73 @@ class WhatsAppAutoSendService : AccessibilityService() {
     }
 
     /**
-     * Tries every reasonable strategy to click the contact-picker row whose name
-     * matches [target]: ancestor click → ancestor gesture tap → text-node parent
-     * gesture tap → text-node gesture tap.
+     * Clicks the contact-picker row whose visible TITLE text equals [target].
+     *
+     * We deliberately match only `node.text` (not contentDescription) because
+     * WhatsApp annotates rows with verbose accessibility labels like
+     * "Pharmacy, M7md and You, last message ..." which can also appear in
+     * unrelated rows or screen elements. Title text is unique per chat row.
+     *
+     * We only click via an actual clickable ancestor — no gesture-tap fallback —
+     * because gesture taps near the wrong text node can land on adjacent rows
+     * and silently send to the wrong chat.
      */
     private fun clickTargetChat(root: AccessibilityNodeInfo, target: String): Boolean {
         val normalized = normalize(target)
         if (normalized.isEmpty()) return false
 
-        val textMatches = mutableListOf<AccessibilityNodeInfo>()
+        val titleMatches = mutableListOf<AccessibilityNodeInfo>()
         walkTree(root) { n ->
-            if (normalize(n.text?.toString()) == normalized ||
-                normalize(n.contentDescription?.toString()) == normalized
-            ) {
-                textMatches.add(n)
+            if (normalize(n.text?.toString()) == normalized) {
+                titleMatches.add(n)
             }
         }
 
-        if (textMatches.isEmpty()) {
-            Log.d(TAG, "No node matches '$target' in current tree")
+        if (titleMatches.isEmpty()) {
+            Log.d(TAG, "No title text matches '$target' in current tree")
             return false
         }
-        Log.d(TAG, "Found ${textMatches.size} text match(es) for '$target'")
+        Log.d(TAG, "Found ${titleMatches.size} title match(es) for '$target'")
 
-        for (match in textMatches) {
-            var current: AccessibilityNodeInfo? = match
-            var depth = 0
-            while (current != null && depth < 15) {
-                if (current.isClickable) {
-                    if (current.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
-                        Log.d(TAG, "Clicked clickable ancestor at depth=$depth")
-                        return true
-                    }
-                    if (gestureTap(current)) {
-                        Log.d(TAG, "Gesture-tapped clickable ancestor at depth=$depth")
-                        return true
-                    }
-                }
-                current = current.parent
-                depth++
-            }
-
-            val parent = match.parent
-            if (parent != null && gestureTap(parent)) {
-                Log.d(TAG, "Gesture-tapped text node's parent")
-                return true
-            }
-            if (gestureTap(match)) {
-                Log.d(TAG, "Gesture-tapped text node directly")
+        for (match in titleMatches) {
+            val clickable = findClickableAncestor(match) ?: continue
+            if (clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                Log.d(TAG, "Clicked clickable row ancestor for '$target'")
                 return true
             }
         }
 
-        Log.w(TAG, "All click strategies failed for '$target'")
+        // Last-resort gesture tap, but only on a clickable ancestor — never on
+        // a bare text node, parent container, or contentDescription match.
+        for (match in titleMatches) {
+            val clickable = findClickableAncestor(match) ?: continue
+            if (gestureTap(clickable)) {
+                Log.d(TAG, "Gesture-tapped clickable row ancestor for '$target'")
+                return true
+            }
+        }
+
+        Log.w(TAG, "Title text found but no clickable ancestor for '$target'")
         return false
     }
 
+    private fun findClickableAncestor(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        var current: AccessibilityNodeInfo? = node
+        var depth = 0
+        while (current != null && depth < 15) {
+            if (current.isClickable) return current
+            current = current.parent
+            depth++
+        }
+        return null
+    }
+
+    /**
+     * Finds the Send FAB on the share-confirm or chat screen and clicks it.
+     * Strict matching only: WhatsApp's resource id, or contentDescription
+     * exactly equal to "Send" (no startsWith — that was matching label text
+     * like "Send to..." and clicking the wrong thing).
+     */
     private fun clickSendButton(root: AccessibilityNodeInfo): Boolean {
         val byId = (root.findAccessibilityNodeInfosByViewId("com.whatsapp:id/send")
             ?: emptyList()) +
@@ -231,8 +271,8 @@ class WhatsAppAutoSendService : AccessibilityService() {
         }
 
         val byDesc = findNode(root) { n ->
-            val desc = n.contentDescription?.toString()?.lowercase() ?: return@findNode false
-            desc == "send" || desc == "send message" || desc.startsWith("send ")
+            val desc = n.contentDescription?.toString() ?: return@findNode false
+            desc.equals("Send", ignoreCase = true)
         }
         if (byDesc != null) {
             if (tryClickWithAncestors(byDesc)) return true
