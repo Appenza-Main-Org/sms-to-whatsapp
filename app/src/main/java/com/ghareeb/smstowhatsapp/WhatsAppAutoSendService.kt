@@ -7,10 +7,12 @@ import android.content.Intent
 import android.content.SharedPreferences
 import android.graphics.Path
 import android.graphics.Rect
-import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.widget.Toast
 
 /**
  * Drives WhatsApp's UI to deliver a forwarded SMS to a named group automatically.
@@ -32,6 +34,7 @@ class WhatsAppAutoSendService : AccessibilityService() {
 
         private const val MAX_SCROLLS_PER_SESSION = 6
         private const val SCROLL_THROTTLE_MS = 800L
+        private val RETRY_DELAYS_MS = longArrayOf(300, 700, 1200, 2000, 3000, 4500)
 
         private val WHATSAPP_PACKAGES = setOf("com.whatsapp", "com.whatsapp.w4b")
 
@@ -40,17 +43,12 @@ class WhatsAppAutoSendService : AccessibilityService() {
 
         fun isRunning(): Boolean = instance != null
 
-        /**
-         * Launches [intent] from the accessibility service context. The service is
-         * system-bound and exempt from Android 10+ background activity-start
-         * restrictions, so this works even when triggered from a BroadcastReceiver
-         * with no visible UI.
-         */
         fun launchIntent(intent: Intent): Boolean {
             val svc = instance ?: return false
             return try {
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 svc.startActivity(intent)
+                svc.scheduleRetries()
                 true
             } catch (e: Exception) {
                 Log.e(TAG, "startActivity from accessibility service failed", e)
@@ -59,9 +57,14 @@ class WhatsAppAutoSendService : AccessibilityService() {
         }
     }
 
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val retryRunnable = Runnable { attemptForward("retry") }
+
     private var scrollCount = 0
     private var lastScrollAt = 0L
     private var sessionTarget: String? = null
+    private var lastClickedTarget: String? = null
+    private var sentToastShown = false
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -71,11 +74,13 @@ class WhatsAppAutoSendService : AccessibilityService() {
 
     override fun onUnbind(intent: Intent?): Boolean {
         instance = null
+        mainHandler.removeCallbacks(retryRunnable)
         return super.onUnbind(intent)
     }
 
     override fun onDestroy() {
         instance = null
+        mainHandler.removeCallbacks(retryRunnable)
         super.onDestroy()
     }
 
@@ -83,7 +88,20 @@ class WhatsAppAutoSendService : AccessibilityService() {
         event ?: return
         val pkg = event.packageName?.toString() ?: return
         if (pkg !in WHATSAPP_PACKAGES) return
+        attemptForward("event:${event.eventType}")
+    }
 
+    override fun onInterrupt() {}
+
+    /** Schedules retries after we launch WhatsApp, so we keep trying as the UI populates. */
+    private fun scheduleRetries() {
+        mainHandler.removeCallbacks(retryRunnable)
+        for (delay in RETRY_DELAYS_MS) {
+            mainHandler.postDelayed(retryRunnable, delay)
+        }
+    }
+
+    private fun attemptForward(trigger: String) {
         val prefs = getSharedPreferences(MainActivity.PREFS_NAME, Context.MODE_PRIVATE)
         val expires = prefs.getLong(KEY_PENDING_EXPIRES, 0L)
         if (System.currentTimeMillis() > expires) {
@@ -92,68 +110,116 @@ class WhatsAppAutoSendService : AccessibilityService() {
         }
 
         val mode = prefs.getString(KEY_PENDING_MODE, null) ?: return
-        val root = rootInActiveWindow ?: return
+        val root = findWhatsAppRoot() ?: run {
+            Log.d(TAG, "[$trigger] WhatsApp window not yet visible")
+            return
+        }
 
         when (mode) {
             MODE_GROUP -> {
                 val target = prefs.getString(KEY_PENDING_TARGET, null) ?: return
                 resetSessionIfTargetChanged(target)
 
-                if (clickTargetChat(root, target)) {
-                    Log.d(TAG, "Clicked target chat row: '$target'")
-                    return
+                if (lastClickedTarget != target) {
+                    if (clickTargetChat(root, target)) {
+                        Log.d(TAG, "[$trigger] Clicked target chat row: '$target'")
+                        lastClickedTarget = target
+                        return
+                    }
+                    if (tryScroll(root)) return
                 }
                 if (clickSendButton(root)) {
-                    Log.d(TAG, "Send tapped for group: '$target'")
-                    clearPending(prefs)
-                    sessionTarget = null
-                    return
+                    Log.d(TAG, "[$trigger] Send tapped for group: '$target'")
+                    showSentToast(target)
+                    clearSession(prefs)
                 }
-                // Target not on screen yet — try scrolling so more rows load.
-                tryScroll(root)
             }
             MODE_NUMBER -> {
                 if (clickSendButton(root)) {
-                    Log.d(TAG, "Send tapped for direct chat")
-                    clearPending(prefs)
+                    Log.d(TAG, "[$trigger] Send tapped for direct chat")
+                    showSentToast(null)
+                    clearSession(prefs)
                 }
             }
-        }
-    }
-
-    override fun onInterrupt() {}
-
-    private fun resetSessionIfTargetChanged(target: String) {
-        if (sessionTarget != target) {
-            sessionTarget = target
-            scrollCount = 0
-            lastScrollAt = 0L
         }
     }
 
     /**
-     * Finds a clickable node whose subtree contains a text or content-description
-     * matching [target] (case-insensitive, whitespace-normalized) and clicks it.
-     * Falls back to a gesture tap on the node's center if the click action fails.
+     * Returns the root of WhatsApp's window, even when a heads-up notification or
+     * other transient window has focus on top of it.
+     */
+    private fun findWhatsAppRoot(): AccessibilityNodeInfo? {
+        val active = rootInActiveWindow
+        if (active != null && active.packageName?.toString() in WHATSAPP_PACKAGES) {
+            return active
+        }
+        return try {
+            windows?.asSequence()
+                ?.mapNotNull { it.root }
+                ?.firstOrNull { it.packageName?.toString() in WHATSAPP_PACKAGES }
+        } catch (e: Exception) {
+            Log.w(TAG, "windows API failed: ${e.message}")
+            null
+        }
+    }
+
+    /**
+     * Tries every reasonable strategy to click the contact-picker row whose name
+     * matches [target]: ancestor click → ancestor gesture tap → text-node parent
+     * gesture tap → text-node gesture tap.
      */
     private fun clickTargetChat(root: AccessibilityNodeInfo, target: String): Boolean {
         val normalized = normalize(target)
         if (normalized.isEmpty()) return false
 
-        val clickables = mutableListOf<AccessibilityNodeInfo>()
-        walkTree(root) { if (it.isClickable) clickables.add(it) }
-
-        for (clickable in clickables) {
-            if (!subtreeMatchesText(clickable, normalized)) continue
-            if (clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
-            if (gestureTap(clickable)) return true
+        val textMatches = mutableListOf<AccessibilityNodeInfo>()
+        walkTree(root) { n ->
+            if (normalize(n.text?.toString()) == normalized ||
+                normalize(n.contentDescription?.toString()) == normalized
+            ) {
+                textMatches.add(n)
+            }
         }
+
+        if (textMatches.isEmpty()) {
+            Log.d(TAG, "No node matches '$target' in current tree")
+            return false
+        }
+        Log.d(TAG, "Found ${textMatches.size} text match(es) for '$target'")
+
+        for (match in textMatches) {
+            var current: AccessibilityNodeInfo? = match
+            var depth = 0
+            while (current != null && depth < 15) {
+                if (current.isClickable) {
+                    if (current.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                        Log.d(TAG, "Clicked clickable ancestor at depth=$depth")
+                        return true
+                    }
+                    if (gestureTap(current)) {
+                        Log.d(TAG, "Gesture-tapped clickable ancestor at depth=$depth")
+                        return true
+                    }
+                }
+                current = current.parent
+                depth++
+            }
+
+            val parent = match.parent
+            if (parent != null && gestureTap(parent)) {
+                Log.d(TAG, "Gesture-tapped text node's parent")
+                return true
+            }
+            if (gestureTap(match)) {
+                Log.d(TAG, "Gesture-tapped text node directly")
+                return true
+            }
+        }
+
+        Log.w(TAG, "All click strategies failed for '$target'")
         return false
     }
 
-    /**
-     * Finds and clicks the Send FAB on the share-confirmation screen.
-     */
     private fun clickSendButton(root: AccessibilityNodeInfo): Boolean {
         val byId = (root.findAccessibilityNodeInfosByViewId("com.whatsapp:id/send")
             ?: emptyList()) +
@@ -218,18 +284,6 @@ class WhatsAppAutoSendService : AccessibilityService() {
         return dispatchGesture(gesture, null, null)
     }
 
-    private fun subtreeMatchesText(node: AccessibilityNodeInfo, target: String): Boolean {
-        var matched = false
-        walkTree(node) { n ->
-            if (matched) return@walkTree
-            if (normalize(n.text?.toString()) == target ||
-                normalize(n.contentDescription?.toString()) == target) {
-                matched = true
-            }
-        }
-        return matched
-    }
-
     private fun walkTree(node: AccessibilityNodeInfo, action: (AccessibilityNodeInfo) -> Unit) {
         action(node)
         for (i in 0 until node.childCount) {
@@ -256,11 +310,39 @@ class WhatsAppAutoSendService : AccessibilityService() {
         return s.trim().replace(Regex("\\s+"), " ").lowercase()
     }
 
+    private fun resetSessionIfTargetChanged(target: String) {
+        if (sessionTarget != target) {
+            sessionTarget = target
+            scrollCount = 0
+            lastScrollAt = 0L
+            lastClickedTarget = null
+            sentToastShown = false
+        }
+    }
+
+    private fun clearSession(prefs: SharedPreferences) {
+        clearPending(prefs)
+        mainHandler.removeCallbacks(retryRunnable)
+        sessionTarget = null
+        lastClickedTarget = null
+        scrollCount = 0
+        lastScrollAt = 0L
+    }
+
     private fun clearPending(prefs: SharedPreferences) {
         prefs.edit()
             .remove(KEY_PENDING_TARGET)
             .remove(KEY_PENDING_EXPIRES)
             .remove(KEY_PENDING_MODE)
             .apply()
+    }
+
+    private fun showSentToast(target: String?) {
+        if (sentToastShown) return
+        sentToastShown = true
+        mainHandler.post {
+            val text = if (target != null) "Sent to $target" else "Sent"
+            Toast.makeText(applicationContext, text, Toast.LENGTH_SHORT).show()
+        }
     }
 }
