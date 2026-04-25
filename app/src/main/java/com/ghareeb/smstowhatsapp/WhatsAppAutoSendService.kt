@@ -32,8 +32,8 @@ class WhatsAppAutoSendService : AccessibilityService() {
         const val MODE_NUMBER = "number"
         const val PENDING_WINDOW_MS = 60_000L
 
-        private val RETRY_DELAYS_MS = longArrayOf(300, 700, 1200, 2000, 3000, 4500)
-        private const val GIVE_UP_DELAY_MS = 6_500L
+        private val RETRY_DELAYS_MS = longArrayOf(300, 700, 1200, 2000, 3000, 4500, 6500, 9000)
+        private const val GIVE_UP_DELAY_MS = 10_500L
 
         private val WHATSAPP_PACKAGES = setOf("com.whatsapp", "com.whatsapp.w4b")
 
@@ -218,64 +218,87 @@ class WhatsAppAutoSendService : AccessibilityService() {
     }
 
     /**
-     * Clicks the contact-picker row whose visible TITLE text equals [target].
+     * Clicks the contact-picker row matching [target]. Uses a layered set of
+     * matchers (strict → emoji-prefix-tolerant → first-word-anchored contains)
+     * and a layered set of click strategies (clickable-ancestor performAction
+     * → clickable-ancestor gesture → row-sized ancestor gesture).
      *
-     * We deliberately match only `node.text` (not contentDescription) because
-     * WhatsApp annotates rows with verbose accessibility labels like
-     * "Pharmacy, M7md and You, last message ..." which can also appear in
-     * unrelated rows or screen elements. Title text is unique per chat row.
-     *
-     * We only click via an actual clickable ancestor — no gesture-tap fallback —
-     * because gesture taps near the wrong text node can land on adjacent rows
-     * and silently send to the wrong chat.
+     * The contains fallback is only consulted as a last resort and remains
+     * safe because it requires the matched node's text to actually contain
+     * the FULL target string — substrings of other rows' text won't match.
      */
     private fun clickTargetChat(root: AccessibilityNodeInfo, target: String): Boolean {
         val normalized = normalize(target)
         if (normalized.isEmpty()) return false
 
-        val titleMatches = mutableListOf<AccessibilityNodeInfo>()
+        val matches = mutableListOf<AccessibilityNodeInfo>()
+
+        // Layer 1: exact match (with optional emoji/decoration prefix).
         walkTree(root) { n ->
             val nText = normalize(n.text?.toString())
             if (nText.isEmpty()) return@walkTree
             if (nText == normalized) {
-                titleMatches.add(n)
+                matches.add(n)
                 return@walkTree
             }
-            // Allow leading emoji / pin-icon / decoration prefix — e.g.
-            // "👥 mahfouz ipn instapay revise" should still match the user's
-            // "MAHFOUZ IPN instapay revise" entry. Anything from the first
-            // letter/digit onward must equal the target exactly.
             val stripped = nText.trimStart { !it.isLetterOrDigit() }.trim()
             if (stripped == normalized) {
-                titleMatches.add(n)
+                matches.add(n)
             }
         }
 
-        if (titleMatches.isEmpty()) {
+        // Layer 2: contains-fallback anchored on the first word of the target,
+        // narrowed via findAccessibilityNodeInfosByText so we don't sweep the
+        // whole tree. Only kicks in if Layer 1 finds nothing.
+        if (matches.isEmpty()) {
+            val firstWord = target.trim().split(Regex("\\s+")).firstOrNull()
+            if (firstWord != null && firstWord.length >= 3) {
+                val candidates = root.findAccessibilityNodeInfosByText(firstWord) ?: emptyList()
+                for (n in candidates) {
+                    val nText = normalize(n.text?.toString())
+                    if (nText.isNotEmpty() && nText.contains(normalized)) {
+                        matches.add(n)
+                    }
+                }
+            }
+        }
+
+        if (matches.isEmpty()) {
             Log.d(TAG, "No title text matches '$target' in current tree")
             return false
         }
-        Log.d(TAG, "Found ${titleMatches.size} title match(es) for '$target'")
+        Log.d(TAG, "Found ${matches.size} match(es) for '$target'")
 
-        for (match in titleMatches) {
+        // Click strategy 1: walk up to a clickable ancestor and performAction.
+        for (match in matches) {
             val clickable = findClickableAncestor(match) ?: continue
             if (clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
-                Log.d(TAG, "Clicked clickable row ancestor for '$target'")
+                Log.d(TAG, "Clicked clickable ancestor")
                 return true
             }
         }
 
-        // Last-resort gesture tap, but only on a clickable ancestor — never on
-        // a bare text node, parent container, or contentDescription match.
-        for (match in titleMatches) {
+        // Click strategy 2: gesture tap on the clickable ancestor.
+        for (match in matches) {
             val clickable = findClickableAncestor(match) ?: continue
             if (gestureTap(clickable)) {
-                Log.d(TAG, "Gesture-tapped clickable row ancestor for '$target'")
+                Log.d(TAG, "Gesture-tapped clickable ancestor")
                 return true
             }
         }
 
-        Log.w(TAG, "Title text found but no clickable ancestor for '$target'")
+        // Click strategy 3: no clickable ancestor exists — gesture tap the
+        // smallest ancestor that's at least 60% of the screen width. That's
+        // the row container, even if WhatsApp didn't mark it isClickable.
+        for (match in matches) {
+            val rowAncestor = findRowAncestor(match) ?: continue
+            if (gestureTap(rowAncestor)) {
+                Log.d(TAG, "Gesture-tapped row-sized ancestor")
+                return true
+            }
+        }
+
+        Log.w(TAG, "Match found but no clickable/row ancestor for '$target'")
         return false
     }
 
@@ -284,6 +307,29 @@ class WhatsAppAutoSendService : AccessibilityService() {
         var depth = 0
         while (current != null && depth < 15) {
             if (current.isClickable) return current
+            current = current.parent
+            depth++
+        }
+        return null
+    }
+
+    /**
+     * Walks up from [node] looking for the first ancestor whose on-screen width
+     * is at least 60% of the display — that's the chat row in a typical list
+     * layout, even when the row isn't marked isClickable.
+     */
+    private fun findRowAncestor(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val screenWidth = resources.displayMetrics.widthPixels
+        val minRowWidth = (screenWidth * 0.6).toInt()
+        val bounds = Rect()
+
+        var current: AccessibilityNodeInfo? = node
+        var depth = 0
+        while (current != null && depth < 15) {
+            current.getBoundsInScreen(bounds)
+            if (bounds.width() >= minRowWidth && bounds.height() in 30..400) {
+                return current
+            }
             current = current.parent
             depth++
         }
