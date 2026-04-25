@@ -41,21 +41,30 @@ object WhatsAppIntentHelper {
             return
         }
 
-        val canLaunchFromBackground = canDrawOverlays(context)
+        // Preferred path: route through the AccessibilityService. It's a system-bound
+        // service, exempt from background-activity-start restrictions, so the launch
+        // always succeeds when the user has enabled accessibility.
+        if (WhatsAppAutoSendService.launchIntent(resolved)) {
+            Log.d(TAG, "WhatsApp launched via accessibility service")
+            return
+        }
 
+        // Secondary path: direct launch. Works when the app has SYSTEM_ALERT_WINDOW
+        // permission or is in the foreground. Silently fails otherwise on Android 10+.
+        val canLaunchFromBackground = canDrawOverlays(context)
         try {
             context.startActivity(resolved)
             Log.d(TAG, "WhatsApp launched directly (overlay granted: $canLaunchFromBackground)")
-            // Only fall back to a tappable notification when background launch is NOT guaranteed.
-            // With overlay permission, the launch always succeeds and the accessibility service
-            // completes the send, so a notification would just clutter the UI.
             if (!canLaunchFromBackground) {
                 postForwardNotification(context, message, resolved, whatsAppMissing = false)
             }
+            return
         } catch (e: Exception) {
-            Log.w(TAG, "Direct launch failed, posting fallback notification: ${e.message}")
-            postForwardNotification(context, message, resolved, whatsAppMissing = false)
+            Log.w(TAG, "Direct launch failed: ${e.message}")
         }
+
+        // Final fallback: tappable notification.
+        postForwardNotification(context, message, resolved, whatsAppMissing = false)
     }
 
     private fun canDrawOverlays(context: Context): Boolean {

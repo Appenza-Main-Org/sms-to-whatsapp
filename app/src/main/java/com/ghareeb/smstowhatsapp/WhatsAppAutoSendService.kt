@@ -2,6 +2,7 @@ package com.ghareeb.smstowhatsapp
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
@@ -29,6 +30,45 @@ class WhatsAppAutoSendService : AccessibilityService() {
         const val PENDING_WINDOW_MS = 45_000L
 
         private val WHATSAPP_PACKAGES = setOf("com.whatsapp", "com.whatsapp.w4b")
+
+        @Volatile
+        private var instance: WhatsAppAutoSendService? = null
+
+        fun isRunning(): Boolean = instance != null
+
+        /**
+         * Launches [intent] from the accessibility service context. AccessibilityService
+         * is a system-bound service and is exempt from Android 10+ background
+         * activity-start restrictions, so this works even when the app was triggered
+         * from a BroadcastReceiver with no visible UI.
+         */
+        fun launchIntent(intent: Intent): Boolean {
+            val svc = instance ?: return false
+            return try {
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                svc.startActivity(intent)
+                true
+            } catch (e: Exception) {
+                Log.e(TAG, "startActivity from accessibility service failed", e)
+                false
+            }
+        }
+    }
+
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        instance = this
+        Log.d(TAG, "Accessibility service connected")
+    }
+
+    override fun onUnbind(intent: Intent?): Boolean {
+        instance = null
+        return super.onUnbind(intent)
+    }
+
+    override fun onDestroy() {
+        instance = null
+        super.onDestroy()
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {

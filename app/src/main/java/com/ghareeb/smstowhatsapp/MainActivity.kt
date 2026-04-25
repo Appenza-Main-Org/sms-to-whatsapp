@@ -193,11 +193,10 @@ class MainActivity : AppCompatActivity() {
 
         updateStatus()
 
-        val autoReady = isAccessibilityServiceEnabled() && Settings.canDrawOverlays(this)
-        val hint = if (autoReady) {
-            "Listener started — full auto-send active"
-        } else {
-            "Started. For full automation enable BOTH Auto-Send and Background Launch below"
+        val hint = when {
+            isAccessibilityServiceEnabled() -> "Listener started — full auto-send active"
+            Settings.canDrawOverlays(this) -> "Started. Enable Auto-Send below to skip the manual group/send tap"
+            else -> "Started. Enable Auto-Send below for hands-free forwarding"
         }
         Toast.makeText(this, hint, Toast.LENGTH_LONG).show()
     }
