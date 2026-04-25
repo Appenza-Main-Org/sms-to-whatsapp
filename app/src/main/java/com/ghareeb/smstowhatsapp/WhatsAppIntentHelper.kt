@@ -19,45 +19,61 @@ object WhatsAppIntentHelper {
     private const val NOTIFICATION_ID_BASE = 2000
 
     fun sendMessage(context: Context, recipient: String, message: String) {
-        val intent = buildWhatsAppIntent(context, recipient, message)
-        if (intent == null) {
+        val trimmed = recipient.trim()
+        val digitsOnly = trimmed.replace(Regex("[^0-9]"), "")
+        val looksLikePhoneNumber = digitsOnly.length >= 7 && trimmed.none { it.isLetter() }
+
+        // Arm the accessibility service to auto-pick the group and tap Send.
+        // The service only acts within PENDING_WINDOW_MS and on WhatsApp windows.
+        armAutoSend(context, trimmed, looksLikePhoneNumber)
+
+        val intent = if (looksLikePhoneNumber) {
+            buildDeeplinkIntent(digitsOnly, message)
+        } else {
+            buildShareIntent(message)
+        }
+
+        val resolved = resolveWhatsAppPackage(context, intent)
+        if (resolved == null) {
             Log.e(TAG, "WhatsApp / WhatsApp Business not installed — cannot forward")
             postForwardNotification(context, message, null, whatsAppMissing = true)
             return
         }
 
-        // Always post a tappable notification first — this is the reliable path
-        // when the receiver fires while the app is in the background (Android 10+
-        // blocks startActivity from background BroadcastReceivers).
-        postForwardNotification(context, message, intent, whatsAppMissing = false)
+        // Notification is the reliable background-launch path.
+        postForwardNotification(context, message, resolved, whatsAppMissing = false)
 
-        // Best-effort direct launch — works if the screen is on / app recently foregrounded.
+        // Direct launch — works if the screen is on / app is in foreground.
         try {
-            context.startActivity(intent)
+            context.startActivity(resolved)
             Log.d(TAG, "WhatsApp launched directly")
         } catch (e: Exception) {
             Log.w(TAG, "Direct launch failed, user must tap notification: ${e.message}")
         }
     }
 
-    private fun buildWhatsAppIntent(context: Context, recipient: String, message: String): Intent? {
-        val trimmed = recipient.trim()
-        val digitsOnly = trimmed.replace(Regex("[^0-9]"), "")
+    private fun armAutoSend(context: Context, recipient: String, isPhoneNumber: Boolean) {
+        val prefs = context.getSharedPreferences(MainActivity.PREFS_NAME, Context.MODE_PRIVATE)
+        val editor = prefs.edit()
+            .putLong(
+                WhatsAppAutoSendService.KEY_PENDING_EXPIRES,
+                System.currentTimeMillis() + WhatsAppAutoSendService.PENDING_WINDOW_MS
+            )
+        if (isPhoneNumber) {
+            editor.putString(WhatsAppAutoSendService.KEY_PENDING_MODE, WhatsAppAutoSendService.MODE_NUMBER)
+                .remove(WhatsAppAutoSendService.KEY_PENDING_TARGET)
+        } else {
+            editor.putString(WhatsAppAutoSendService.KEY_PENDING_MODE, WhatsAppAutoSendService.MODE_GROUP)
+                .putString(WhatsAppAutoSendService.KEY_PENDING_TARGET, recipient)
+        }
+        editor.apply()
+    }
 
-        // Treat as direct number ONLY if the input looks like a real phone number
-        // (literal "GROUP", free-form text like "Test Group", or too-few digits → share picker).
-        val useSharePicker = trimmed.equals("GROUP", ignoreCase = true) ||
-            digitsOnly.length < 7 ||
-            trimmed.any { it.isLetter() }
-
-        val intent = if (useSharePicker) buildShareIntent(message) else buildDeeplinkIntent(digitsOnly, message)
-
+    private fun resolveWhatsAppPackage(context: Context, intent: Intent): Intent? {
         val pm = context.packageManager
         if (pm.resolveActivity(intent, 0) != null) return intent
-
         intent.setPackage("com.whatsapp.w4b")
         if (pm.resolveActivity(intent, 0) != null) return intent
-
         return null
     }
 

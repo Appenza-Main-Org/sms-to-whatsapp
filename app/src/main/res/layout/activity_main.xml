@@ -85,12 +85,29 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="Disable Battery Optimization"
+            android:layout_marginBottom="8dp" />
+
+        <Button
+            android:id="@+id/accessibilityButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Enable Auto-Send (Accessibility)"
+            android:layout_marginBottom="8dp" />
+
+        <TextView
+            android:id="@+id/accessibilityStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Auto-Send: NOT ENABLED"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:padding="8dp"
             android:layout_marginBottom="24dp" />
 
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Note: When a matching SMS arrives, a high-priority notification appears — tap it to open WhatsApp with the message pre-filled, then tap Send. (Android blocks apps from auto-sending WhatsApp messages without the official Business API, so one tap is always required.)"
+            android:text="How it works: Enter the exact WhatsApp group name (e.g. Test Group) or a phone number with country code. When a matching SMS arrives, WhatsApp opens with the message pre-filled. If Auto-Send is enabled, the accessibility service will automatically pick the named group and tap Send — no manual taps. If Auto-Send is off, a notification lets you tap to complete the send yourself."
             android:textSize="12sp"
             android:textStyle="italic" />
 

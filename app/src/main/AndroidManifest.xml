@@ -71,6 +71,20 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!-- Accessibility service that auto-picks the target group and taps Send in WhatsApp -->
+        <service
+            android:name=".WhatsAppAutoSendService"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
     </application>
 
 </manifest>

@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">SMS to WhatsApp</string>
+    <string name="accessibility_service_description">Allows SMS to WhatsApp to automatically pick the target WhatsApp group/chat and tap Send after a matching SMS is forwarded. Only acts on WhatsApp, only after a matching SMS was just received, and only within a short time window.</string>
 </resources>

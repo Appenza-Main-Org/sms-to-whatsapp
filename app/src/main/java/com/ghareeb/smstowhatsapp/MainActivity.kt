@@ -1,6 +1,8 @@
 package com.ghareeb.smstowhatsapp
 
 import android.Manifest
+import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
@@ -9,6 +11,8 @@ import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
+import android.text.TextUtils
+import android.view.accessibility.AccessibilityManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
@@ -25,6 +29,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var stopButton: Button
     private lateinit var statusText: TextView
     private lateinit var batteryButton: Button
+    private lateinit var accessibilityButton: Button
+    private lateinit var accessibilityStatus: TextView
     private lateinit var prefs: SharedPreferences
 
     companion object {
@@ -47,8 +53,9 @@ class MainActivity : AppCompatActivity() {
         stopButton = findViewById(R.id.stopButton)
         statusText = findViewById(R.id.statusText)
         batteryButton = findViewById(R.id.batteryButton)
+        accessibilityButton = findViewById(R.id.accessibilityButton)
+        accessibilityStatus = findViewById(R.id.accessibilityStatus)
 
-        // Load saved values — defaults tuned for InstaPay/IPN
         senderFilterEditText.setText(prefs.getString(KEY_SENDER_FILTER, "InstaPay,IPN"))
         recipientEditText.setText(prefs.getString(KEY_RECIPIENT, "GROUP"))
         updateStatus()
@@ -63,11 +70,46 @@ class MainActivity : AppCompatActivity() {
         }
 
         batteryButton.setOnClickListener { requestBatteryOptimizationExemption() }
+
+        accessibilityButton.setOnClickListener {
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            Toast.makeText(
+                this,
+                "Find 'SMS to WhatsApp' in the list and enable it",
+                Toast.LENGTH_LONG
+            ).show()
+        }
     }
 
     private fun updateStatus() {
         val running = prefs.getBoolean(KEY_IS_RUNNING, false)
         statusText.text = if (running) "Status: RUNNING" else "Status: STOPPED"
+
+        val enabled = isAccessibilityServiceEnabled()
+        accessibilityStatus.text = if (enabled) "Auto-Send: ENABLED" else "Auto-Send: NOT ENABLED — tap button above"
+    }
+
+    private fun isAccessibilityServiceEnabled(): Boolean {
+        val expected = ComponentName(this, WhatsAppAutoSendService::class.java).flattenToString()
+        val enabledSetting = Settings.Secure.getString(
+            contentResolver,
+            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+        ) ?: return false
+
+        val splitter = TextUtils.SimpleStringSplitter(':')
+        splitter.setString(enabledSetting)
+        while (splitter.hasNext()) {
+            val component = splitter.next()
+            if (component.equals(expected, ignoreCase = true)) return true
+            // Also accept short form (package/class) that some OEMs use
+            val short = ComponentName(this, WhatsAppAutoSendService::class.java).flattenToShortString()
+            if (component.equals(short, ignoreCase = true)) return true
+        }
+
+        // Cross-check via AccessibilityManager (more authoritative on some OEMs)
+        val am = getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
+        return am.getEnabledAccessibilityServiceList(android.accessibilityservice.AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
+            .any { it.id.contains(packageName, ignoreCase = true) && it.id.contains("WhatsAppAutoSendService", ignoreCase = true) }
     }
 
     private fun requestPermissions() {
@@ -116,7 +158,6 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        // Save to prefs so receiver can read them
         prefs.edit()
             .putString(KEY_SENDER_FILTER, senderFilter)
             .putString(KEY_RECIPIENT, recipient)
@@ -131,7 +172,13 @@ class MainActivity : AppCompatActivity() {
         }
 
         updateStatus()
-        Toast.makeText(this, "SMS listener started", Toast.LENGTH_SHORT).show()
+
+        val hint = if (isAccessibilityServiceEnabled()) {
+            "SMS listener started — auto-send active"
+        } else {
+            "Started. Enable Auto-Send below for hands-free group delivery"
+        }
+        Toast.makeText(this, hint, Toast.LENGTH_LONG).show()
     }
 
     private fun requestBatteryOptimizationExemption() {
