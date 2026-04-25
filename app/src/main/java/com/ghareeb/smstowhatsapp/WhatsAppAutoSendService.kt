@@ -32,9 +32,8 @@ class WhatsAppAutoSendService : AccessibilityService() {
         const val MODE_NUMBER = "number"
         const val PENDING_WINDOW_MS = 60_000L
 
-        private const val MAX_SCROLLS_PER_SESSION = 6
-        private const val SCROLL_THROTTLE_MS = 800L
         private val RETRY_DELAYS_MS = longArrayOf(300, 700, 1200, 2000, 3000, 4500)
+        private const val GIVE_UP_DELAY_MS = 6_500L
 
         private val WHATSAPP_PACKAGES = setOf("com.whatsapp", "com.whatsapp.w4b")
 
@@ -59,9 +58,8 @@ class WhatsAppAutoSendService : AccessibilityService() {
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val retryRunnable = Runnable { attemptForward("retry") }
+    private val giveUpRunnable = Runnable { handleGiveUp() }
 
-    private var scrollCount = 0
-    private var lastScrollAt = 0L
     private var sessionTarget: String? = null
     private var lastClickedTarget: String? = null
     private var sentToastShown = false
@@ -74,14 +72,19 @@ class WhatsAppAutoSendService : AccessibilityService() {
 
     override fun onUnbind(intent: Intent?): Boolean {
         instance = null
-        mainHandler.removeCallbacks(retryRunnable)
+        cancelPendingHandlers()
         return super.onUnbind(intent)
     }
 
     override fun onDestroy() {
         instance = null
-        mainHandler.removeCallbacks(retryRunnable)
+        cancelPendingHandlers()
         super.onDestroy()
+    }
+
+    private fun cancelPendingHandlers() {
+        mainHandler.removeCallbacks(retryRunnable)
+        mainHandler.removeCallbacks(giveUpRunnable)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -95,10 +98,28 @@ class WhatsAppAutoSendService : AccessibilityService() {
 
     /** Schedules retries after we launch WhatsApp, so we keep trying as the UI populates. */
     private fun scheduleRetries() {
-        mainHandler.removeCallbacks(retryRunnable)
+        cancelPendingHandlers()
         for (delay in RETRY_DELAYS_MS) {
             mainHandler.postDelayed(retryRunnable, delay)
         }
+        mainHandler.postDelayed(giveUpRunnable, GIVE_UP_DELAY_MS)
+    }
+
+    private fun handleGiveUp() {
+        val prefs = getSharedPreferences(MainActivity.PREFS_NAME, Context.MODE_PRIVATE)
+        if (!prefs.contains(KEY_PENDING_MODE)) return
+        val target = prefs.getString(KEY_PENDING_TARGET, null)
+        Log.w(TAG, "Gave up — '$target' not delivered after retries")
+        if (target != null) {
+            mainHandler.post {
+                Toast.makeText(
+                    applicationContext,
+                    "Could not find '$target' in WhatsApp — open the chat once and try again",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+        clearSession(prefs)
     }
 
     private fun attemptForward(trigger: String) {
@@ -126,13 +147,11 @@ class WhatsAppAutoSendService : AccessibilityService() {
                         lastClickedTarget = target
                         return
                     }
-                    // Only scroll if the target name is genuinely NOT in the visible
-                    // accessibility tree. Otherwise scrolling pushes a visible target
-                    // out of view — most chats are in Recent/Frequently and need no
-                    // scroll at all.
-                    if (!targetVisibleAnywhere(root, target)) {
-                        tryScroll(root)
-                    }
+                    // Don't scroll. The contact picker is still painting on the
+                    // first few retries — scrolling pushes the target out of view
+                    // before we get a chance to click it. Targets in Recents /
+                    // Frequently are visible without any scroll, and the retry
+                    // schedule (up to 4.5s) gives the tree time to populate.
                     return
                 }
 
@@ -180,26 +199,6 @@ class WhatsAppAutoSendService : AccessibilityService() {
     }
 
     /**
-     * Lenient visibility check: returns true if the target appears anywhere in
-     * the tree, even as a substring of another node's text (e.g. wrapped in an
-     * emoji prefix or accessibility-label suffix). Used only to decide whether
-     * a scroll is justified — never for clicking.
-     */
-    private fun targetVisibleAnywhere(root: AccessibilityNodeInfo, target: String): Boolean {
-        val normalized = normalize(target)
-        if (normalized.isEmpty()) return true
-        var found = false
-        walkTree(root) { n ->
-            if (found) return@walkTree
-            val text = normalize(n.text?.toString())
-            if (text.isNotEmpty() && (text == normalized || text.contains(normalized))) {
-                found = true
-            }
-        }
-        return found
-    }
-
-    /**
      * Returns the root of WhatsApp's window, even when a heads-up notification or
      * other transient window has focus on top of it.
      */
@@ -236,7 +235,18 @@ class WhatsAppAutoSendService : AccessibilityService() {
 
         val titleMatches = mutableListOf<AccessibilityNodeInfo>()
         walkTree(root) { n ->
-            if (normalize(n.text?.toString()) == normalized) {
+            val nText = normalize(n.text?.toString())
+            if (nText.isEmpty()) return@walkTree
+            if (nText == normalized) {
+                titleMatches.add(n)
+                return@walkTree
+            }
+            // Allow leading emoji / pin-icon / decoration prefix — e.g.
+            // "👥 mahfouz ipn instapay revise" should still match the user's
+            // "MAHFOUZ IPN instapay revise" entry. Anything from the first
+            // letter/digit onward must equal the target exactly.
+            val stripped = nText.trimStart { !it.isLetterOrDigit() }.trim()
+            if (stripped == normalized) {
                 titleMatches.add(n)
             }
         }
@@ -308,21 +318,6 @@ class WhatsAppAutoSendService : AccessibilityService() {
         return false
     }
 
-    private fun tryScroll(root: AccessibilityNodeInfo): Boolean {
-        if (scrollCount >= MAX_SCROLLS_PER_SESSION) return false
-        val now = System.currentTimeMillis()
-        if (now - lastScrollAt < SCROLL_THROTTLE_MS) return false
-
-        val scrollable = findNode(root) { it.isScrollable } ?: return false
-        val ok = scrollable.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
-        if (ok) {
-            scrollCount++
-            lastScrollAt = now
-            Log.d(TAG, "Scrolled forward (attempt $scrollCount/$MAX_SCROLLS_PER_SESSION)")
-        }
-        return ok
-    }
-
     private fun tryClickWithAncestors(node: AccessibilityNodeInfo): Boolean {
         var current: AccessibilityNodeInfo? = node
         var depth = 0
@@ -383,8 +378,6 @@ class WhatsAppAutoSendService : AccessibilityService() {
     private fun resetSessionIfTargetChanged(target: String) {
         if (sessionTarget != target) {
             sessionTarget = target
-            scrollCount = 0
-            lastScrollAt = 0L
             lastClickedTarget = null
             sentToastShown = false
         }
@@ -392,11 +385,9 @@ class WhatsAppAutoSendService : AccessibilityService() {
 
     private fun clearSession(prefs: SharedPreferences) {
         clearPending(prefs)
-        mainHandler.removeCallbacks(retryRunnable)
+        cancelPendingHandlers()
         sessionTarget = null
         lastClickedTarget = null
-        scrollCount = 0
-        lastScrollAt = 0L
     }
 
     private fun clearPending(prefs: SharedPreferences) {
