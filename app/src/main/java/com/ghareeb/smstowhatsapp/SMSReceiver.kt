@@ -3,6 +3,7 @@ package com.ghareeb.smstowhatsapp
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.os.PowerManager
 import android.provider.Telephony
 import android.util.Log
 
@@ -69,7 +70,29 @@ class SMSReceiver : BroadcastReceiver() {
 
         Log.d(TAG, "Sender matches filter. Forwarding to WhatsApp.")
         val formatted = formatMessage(senderStr, fullBody)
+
+        // Wake the screen before launching WhatsApp. Without a powered display,
+        // WhatsApp's contact-picker rows do not lay out, so the accessibility
+        // service has nothing to click and the user gets stuck on "Send To".
+        wakeScreen(context)
+
         WhatsAppIntentHelper.sendMessage(context, recipient, formatted)
+    }
+
+    private fun wakeScreen(context: Context) {
+        try {
+            val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+            @Suppress("DEPRECATION")
+            val wakeLock = pm.newWakeLock(
+                PowerManager.SCREEN_BRIGHT_WAKE_LOCK or
+                    PowerManager.ACQUIRE_CAUSES_WAKEUP or
+                    PowerManager.ON_AFTER_RELEASE,
+                "SMSToWhatsApp::ForwardWakeLock"
+            )
+            wakeLock.acquire(15_000L)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to acquire wake lock: ${e.message}")
+        }
     }
 
     /**

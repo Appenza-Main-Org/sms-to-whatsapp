@@ -1,21 +1,22 @@
 package com.ghareeb.smstowhatsapp
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.GestureDescription
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.graphics.Path
+import android.graphics.Rect
+import android.os.Bundle
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 
 /**
- * Automates the final "pick group + tap send" steps inside WhatsApp after
- * our app fires a share intent. WhatsApp exposes no API to target a group
- * by name, so we drive its UI via the accessibility tree.
- *
- * Activation is gated by a short-lived "pending" flag set in SharedPreferences
- * by WhatsAppIntentHelper — the service only acts on WhatsApp windows
- * within PENDING_WINDOW_MS of our forward, then clears the flag.
+ * Drives WhatsApp's UI to deliver a forwarded SMS to a named group automatically.
+ * WhatsApp exposes no API to target a group by name, so we walk the accessibility
+ * tree to find the row, click it, then click Send. Activation is gated by a
+ * short-lived "pending" flag set by WhatsAppIntentHelper right after a matching SMS.
  */
 class WhatsAppAutoSendService : AccessibilityService() {
 
@@ -27,7 +28,10 @@ class WhatsAppAutoSendService : AccessibilityService() {
         const val KEY_PENDING_MODE = "pending_mode"
         const val MODE_GROUP = "group"
         const val MODE_NUMBER = "number"
-        const val PENDING_WINDOW_MS = 45_000L
+        const val PENDING_WINDOW_MS = 60_000L
+
+        private const val MAX_SCROLLS_PER_SESSION = 6
+        private const val SCROLL_THROTTLE_MS = 800L
 
         private val WHATSAPP_PACKAGES = setOf("com.whatsapp", "com.whatsapp.w4b")
 
@@ -37,10 +41,10 @@ class WhatsAppAutoSendService : AccessibilityService() {
         fun isRunning(): Boolean = instance != null
 
         /**
-         * Launches [intent] from the accessibility service context. AccessibilityService
-         * is a system-bound service and is exempt from Android 10+ background
-         * activity-start restrictions, so this works even when the app was triggered
-         * from a BroadcastReceiver with no visible UI.
+         * Launches [intent] from the accessibility service context. The service is
+         * system-bound and exempt from Android 10+ background activity-start
+         * restrictions, so this works even when triggered from a BroadcastReceiver
+         * with no visible UI.
          */
         fun launchIntent(intent: Intent): Boolean {
             val svc = instance ?: return false
@@ -54,6 +58,10 @@ class WhatsAppAutoSendService : AccessibilityService() {
             }
         }
     }
+
+    private var scrollCount = 0
+    private var lastScrollAt = 0L
+    private var sessionTarget: String? = null
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -79,9 +87,7 @@ class WhatsAppAutoSendService : AccessibilityService() {
         val prefs = getSharedPreferences(MainActivity.PREFS_NAME, Context.MODE_PRIVATE)
         val expires = prefs.getLong(KEY_PENDING_EXPIRES, 0L)
         if (System.currentTimeMillis() > expires) {
-            if (prefs.getString(KEY_PENDING_TARGET, null) != null || prefs.getString(KEY_PENDING_MODE, null) != null) {
-                clearPending(prefs)
-            }
+            if (prefs.contains(KEY_PENDING_MODE)) clearPending(prefs)
             return
         }
 
@@ -91,19 +97,22 @@ class WhatsAppAutoSendService : AccessibilityService() {
         when (mode) {
             MODE_GROUP -> {
                 val target = prefs.getString(KEY_PENDING_TARGET, null) ?: return
-                // Step 1: if we're still on the share sheet, pick the target row.
+                resetSessionIfTargetChanged(target)
+
                 if (clickTargetChat(root, target)) {
-                    Log.d(TAG, "Clicked target chat row: $target")
+                    Log.d(TAG, "Clicked target chat row: '$target'")
                     return
                 }
-                // Step 2: if we're now on the preview screen, tap Send.
                 if (clickSendButton(root)) {
-                    Log.d(TAG, "Send tapped for group: $target")
+                    Log.d(TAG, "Send tapped for group: '$target'")
                     clearPending(prefs)
+                    sessionTarget = null
+                    return
                 }
+                // Target not on screen yet — try scrolling so more rows load.
+                tryScroll(root)
             }
             MODE_NUMBER -> {
-                // Deeplink opens the chat with text pre-filled; just tap Send.
                 if (clickSendButton(root)) {
                     Log.d(TAG, "Send tapped for direct chat")
                     clearPending(prefs)
@@ -114,57 +123,119 @@ class WhatsAppAutoSendService : AccessibilityService() {
 
     override fun onInterrupt() {}
 
+    private fun resetSessionIfTargetChanged(target: String) {
+        if (sessionTarget != target) {
+            sessionTarget = target
+            scrollCount = 0
+            lastScrollAt = 0L
+        }
+    }
+
     /**
-     * Locates a contact/group row in the share sheet whose name exactly matches
-     * [target] (case-insensitive, trimmed) and clicks its clickable ancestor.
+     * Finds a clickable node whose subtree contains a text or content-description
+     * matching [target] (case-insensitive, whitespace-normalized) and clicks it.
+     * Falls back to a gesture tap on the node's center if the click action fails.
      */
     private fun clickTargetChat(root: AccessibilityNodeInfo, target: String): Boolean {
-        val normalized = target.trim()
-        val matches = root.findAccessibilityNodeInfosByText(normalized) ?: return false
-        for (node in matches) {
-            val text = node.text?.toString()?.trim() ?: continue
-            if (!text.equals(normalized, ignoreCase = true)) continue
-            val clickable = findClickableAncestor(node) ?: continue
+        val normalized = normalize(target)
+        if (normalized.isEmpty()) return false
+
+        val clickables = mutableListOf<AccessibilityNodeInfo>()
+        walkTree(root) { if (it.isClickable) clickables.add(it) }
+
+        for (clickable in clickables) {
+            if (!subtreeMatchesText(clickable, normalized)) continue
             if (clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+            if (gestureTap(clickable)) return true
         }
         return false
     }
 
     /**
-     * Finds and clicks the Send FAB. Tries WhatsApp's resource id first,
-     * then falls back to content-description and text matches.
+     * Finds and clicks the Send FAB on the share-confirmation screen.
      */
     private fun clickSendButton(root: AccessibilityNodeInfo): Boolean {
-        val byId = root.findAccessibilityNodeInfosByViewId("com.whatsapp:id/send")
-            ?: root.findAccessibilityNodeInfosByViewId("com.whatsapp.w4b:id/send")
-            ?: emptyList()
+        val byId = (root.findAccessibilityNodeInfosByViewId("com.whatsapp:id/send")
+            ?: emptyList()) +
+            (root.findAccessibilityNodeInfosByViewId("com.whatsapp.w4b:id/send")
+                ?: emptyList())
         for (node in byId) {
-            if (tryClick(node)) return true
+            if (tryClickWithAncestors(node)) return true
+            if (gestureTap(node)) return true
         }
 
         val byDesc = findNode(root) { n ->
-            val desc = n.contentDescription?.toString() ?: return@findNode false
-            desc.equals("Send", ignoreCase = true) || desc.equals("Send message", ignoreCase = true)
+            val desc = n.contentDescription?.toString()?.lowercase() ?: return@findNode false
+            desc == "send" || desc == "send message" || desc.startsWith("send ")
         }
-        if (byDesc != null && tryClick(byDesc)) return true
+        if (byDesc != null) {
+            if (tryClickWithAncestors(byDesc)) return true
+            if (gestureTap(byDesc)) return true
+        }
 
         return false
     }
 
-    private fun tryClick(node: AccessibilityNodeInfo): Boolean {
-        val target = if (node.isClickable) node else findClickableAncestor(node) ?: return false
-        return target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+    private fun tryScroll(root: AccessibilityNodeInfo): Boolean {
+        if (scrollCount >= MAX_SCROLLS_PER_SESSION) return false
+        val now = System.currentTimeMillis()
+        if (now - lastScrollAt < SCROLL_THROTTLE_MS) return false
+
+        val scrollable = findNode(root) { it.isScrollable } ?: return false
+        val ok = scrollable.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+        if (ok) {
+            scrollCount++
+            lastScrollAt = now
+            Log.d(TAG, "Scrolled forward (attempt $scrollCount/$MAX_SCROLLS_PER_SESSION)")
+        }
+        return ok
     }
 
-    private fun findClickableAncestor(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+    private fun tryClickWithAncestors(node: AccessibilityNodeInfo): Boolean {
         var current: AccessibilityNodeInfo? = node
         var depth = 0
-        while (current != null && depth < 10) {
-            if (current.isClickable) return current
+        while (current != null && depth < 15) {
+            if (current.isClickable && current.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                return true
+            }
             current = current.parent
             depth++
         }
-        return null
+        return false
+    }
+
+    private fun gestureTap(node: AccessibilityNodeInfo): Boolean {
+        val bounds = Rect()
+        node.getBoundsInScreen(bounds)
+        if (bounds.width() <= 0 || bounds.height() <= 0) return false
+
+        val cx = bounds.exactCenterX()
+        val cy = bounds.exactCenterY()
+        val path = Path().apply { moveTo(cx, cy) }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, 60))
+            .build()
+        return dispatchGesture(gesture, null, null)
+    }
+
+    private fun subtreeMatchesText(node: AccessibilityNodeInfo, target: String): Boolean {
+        var matched = false
+        walkTree(node) { n ->
+            if (matched) return@walkTree
+            if (normalize(n.text?.toString()) == target ||
+                normalize(n.contentDescription?.toString()) == target) {
+                matched = true
+            }
+        }
+        return matched
+    }
+
+    private fun walkTree(node: AccessibilityNodeInfo, action: (AccessibilityNodeInfo) -> Unit) {
+        action(node)
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            walkTree(child, action)
+        }
     }
 
     private fun findNode(
@@ -178,6 +249,11 @@ class WhatsAppAutoSendService : AccessibilityService() {
             if (found != null) return found
         }
         return null
+    }
+
+    private fun normalize(s: String?): String {
+        if (s.isNullOrBlank()) return ""
+        return s.trim().replace(Regex("\\s+"), " ").lowercase()
     }
 
     private fun clearPending(prefs: SharedPreferences) {
