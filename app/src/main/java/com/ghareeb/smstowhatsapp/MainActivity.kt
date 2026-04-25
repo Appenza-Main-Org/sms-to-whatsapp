@@ -61,7 +61,7 @@ class MainActivity : AppCompatActivity() {
         overlayStatus = findViewById(R.id.overlayStatus)
 
         senderFilterEditText.setText(prefs.getString(KEY_SENDER_FILTER, "InstaPay,IPN"))
-        recipientEditText.setText(prefs.getString(KEY_RECIPIENT, "GROUP"))
+        recipientEditText.setText(prefs.getString(KEY_RECIPIENT, "MAHFOUZ IPN instapay revise"))
         updateStatus()
 
         startButton.setOnClickListener { requestPermissions() }

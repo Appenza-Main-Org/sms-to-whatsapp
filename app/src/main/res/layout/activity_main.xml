@@ -62,7 +62,7 @@
             android:id="@+id/recipient"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="GROUP or 201234567890"
+            android:hint="MAHFOUZ IPN instapay revise"
             android:inputType="text"
             android:layout_marginBottom="24dp" />
 
