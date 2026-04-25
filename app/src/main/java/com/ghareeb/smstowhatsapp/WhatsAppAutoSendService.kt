@@ -126,7 +126,13 @@ class WhatsAppAutoSendService : AccessibilityService() {
                         lastClickedTarget = target
                         return
                     }
-                    if (tryScroll(root)) return
+                    // Only scroll if the target name is genuinely NOT in the visible
+                    // accessibility tree. Otherwise scrolling pushes a visible target
+                    // out of view — most chats are in Recent/Frequently and need no
+                    // scroll at all.
+                    if (!targetVisibleAnywhere(root, target)) {
+                        tryScroll(root)
+                    }
                     return
                 }
 
@@ -167,6 +173,26 @@ class WhatsAppAutoSendService : AccessibilityService() {
         walkTree(root) { n ->
             if (found) return@walkTree
             if (normalize(n.text?.toString()) == normalized) {
+                found = true
+            }
+        }
+        return found
+    }
+
+    /**
+     * Lenient visibility check: returns true if the target appears anywhere in
+     * the tree, even as a substring of another node's text (e.g. wrapped in an
+     * emoji prefix or accessibility-label suffix). Used only to decide whether
+     * a scroll is justified — never for clicking.
+     */
+    private fun targetVisibleAnywhere(root: AccessibilityNodeInfo, target: String): Boolean {
+        val normalized = normalize(target)
+        if (normalized.isEmpty()) return true
+        var found = false
+        walkTree(root) { n ->
+            if (found) return@walkTree
+            val text = normalize(n.text?.toString())
+            if (text.isNotEmpty() && (text == normalized || text.contains(normalized))) {
                 found = true
             }
         }
@@ -347,7 +373,11 @@ class WhatsAppAutoSendService : AccessibilityService() {
 
     private fun normalize(s: String?): String {
         if (s.isNullOrBlank()) return ""
-        return s.trim().replace(Regex("\\s+"), " ").lowercase()
+        // Treat non-breaking / figure / narrow no-break spaces as regular spaces;
+        // WhatsApp occasionally uses these in group names rendered with custom fonts.
+        return s.trim()
+            .replace(Regex("[\\s\\u00A0\\u2007\\u202F]+"), " ")
+            .lowercase()
     }
 
     private fun resetSessionIfTargetChanged(target: String) {
