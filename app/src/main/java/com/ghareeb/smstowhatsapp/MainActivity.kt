@@ -41,6 +41,14 @@ class MainActivity : AppCompatActivity() {
         const val KEY_RECIPIENT = "recipient"
         const val KEY_IS_RUNNING = "is_running"
         const val PERMISSION_REQUEST_CODE = 100
+
+        const val DEFAULT_RECIPIENT = "MAHFOUZ IPN instapay revise"
+        const val DEFAULT_SENDER_FILTER = "InstaPay,IPN"
+
+        // Recipients we historically auto-populated; any of these should be
+        // migrated to DEFAULT_RECIPIENT so existing installs pick up the new
+        // default. Anything the user typed themselves is preserved.
+        private val LEGACY_RECIPIENTS = setOf("GROUP", "Pharmacy", "Test Group")
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -48,6 +56,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        migrateLegacyRecipient()
 
         senderFilterEditText = findViewById(R.id.senderFilter)
         recipientEditText = findViewById(R.id.recipient)
@@ -60,8 +69,8 @@ class MainActivity : AppCompatActivity() {
         overlayButton = findViewById(R.id.overlayButton)
         overlayStatus = findViewById(R.id.overlayStatus)
 
-        senderFilterEditText.setText(prefs.getString(KEY_SENDER_FILTER, "InstaPay,IPN"))
-        recipientEditText.setText(prefs.getString(KEY_RECIPIENT, "MAHFOUZ IPN instapay revise"))
+        senderFilterEditText.setText(prefs.getString(KEY_SENDER_FILTER, DEFAULT_SENDER_FILTER))
+        recipientEditText.setText(prefs.getString(KEY_RECIPIENT, DEFAULT_RECIPIENT))
         updateStatus()
 
         startButton.setOnClickListener { requestPermissions() }
@@ -95,6 +104,18 @@ class MainActivity : AppCompatActivity() {
                 "Toggle 'Allow display over other apps' ON",
                 Toast.LENGTH_LONG
             ).show()
+        }
+    }
+
+    /**
+     * Replaces the saved recipient with [DEFAULT_RECIPIENT] when it is unset or
+     * still holds one of the historical placeholder values. Anything the user
+     * has typed themselves is left alone.
+     */
+    private fun migrateLegacyRecipient() {
+        val saved = prefs.getString(KEY_RECIPIENT, null)
+        if (saved == null || saved.trim() in LEGACY_RECIPIENTS) {
+            prefs.edit().putString(KEY_RECIPIENT, DEFAULT_RECIPIENT).apply()
         }
     }
 
