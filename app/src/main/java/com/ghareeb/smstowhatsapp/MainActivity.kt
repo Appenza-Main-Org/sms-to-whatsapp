@@ -31,6 +31,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var batteryButton: Button
     private lateinit var accessibilityButton: Button
     private lateinit var accessibilityStatus: TextView
+    private lateinit var overlayButton: Button
+    private lateinit var overlayStatus: TextView
     private lateinit var prefs: SharedPreferences
 
     companion object {
@@ -55,6 +57,8 @@ class MainActivity : AppCompatActivity() {
         batteryButton = findViewById(R.id.batteryButton)
         accessibilityButton = findViewById(R.id.accessibilityButton)
         accessibilityStatus = findViewById(R.id.accessibilityStatus)
+        overlayButton = findViewById(R.id.overlayButton)
+        overlayStatus = findViewById(R.id.overlayStatus)
 
         senderFilterEditText.setText(prefs.getString(KEY_SENDER_FILTER, "InstaPay,IPN"))
         recipientEditText.setText(prefs.getString(KEY_RECIPIENT, "GROUP"))
@@ -79,6 +83,19 @@ class MainActivity : AppCompatActivity() {
                 Toast.LENGTH_LONG
             ).show()
         }
+
+        overlayButton.setOnClickListener {
+            val intent = Intent(
+                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                Uri.parse("package:$packageName")
+            )
+            startActivity(intent)
+            Toast.makeText(
+                this,
+                "Toggle 'Allow display over other apps' ON",
+                Toast.LENGTH_LONG
+            ).show()
+        }
     }
 
     private fun updateStatus() {
@@ -87,6 +104,9 @@ class MainActivity : AppCompatActivity() {
 
         val enabled = isAccessibilityServiceEnabled()
         accessibilityStatus.text = if (enabled) "Auto-Send: ENABLED" else "Auto-Send: NOT ENABLED — tap button above"
+
+        val overlayEnabled = Settings.canDrawOverlays(this)
+        overlayStatus.text = if (overlayEnabled) "Background Launch: ENABLED" else "Background Launch: NOT ENABLED — tap button above"
     }
 
     private fun isAccessibilityServiceEnabled(): Boolean {
@@ -173,10 +193,11 @@ class MainActivity : AppCompatActivity() {
 
         updateStatus()
 
-        val hint = if (isAccessibilityServiceEnabled()) {
-            "SMS listener started — auto-send active"
+        val autoReady = isAccessibilityServiceEnabled() && Settings.canDrawOverlays(this)
+        val hint = if (autoReady) {
+            "Listener started — full auto-send active"
         } else {
-            "Started. Enable Auto-Send below for hands-free group delivery"
+            "Started. For full automation enable BOTH Auto-Send and Background Launch below"
         }
         Toast.makeText(this, hint, Toast.LENGTH_LONG).show()
     }

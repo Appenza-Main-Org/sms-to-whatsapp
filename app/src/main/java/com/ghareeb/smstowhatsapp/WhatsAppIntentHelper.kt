@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.provider.Settings
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import java.net.URLEncoder
@@ -40,16 +41,25 @@ object WhatsAppIntentHelper {
             return
         }
 
-        // Notification is the reliable background-launch path.
-        postForwardNotification(context, message, resolved, whatsAppMissing = false)
+        val canLaunchFromBackground = canDrawOverlays(context)
 
-        // Direct launch — works if the screen is on / app is in foreground.
         try {
             context.startActivity(resolved)
-            Log.d(TAG, "WhatsApp launched directly")
+            Log.d(TAG, "WhatsApp launched directly (overlay granted: $canLaunchFromBackground)")
+            // Only fall back to a tappable notification when background launch is NOT guaranteed.
+            // With overlay permission, the launch always succeeds and the accessibility service
+            // completes the send, so a notification would just clutter the UI.
+            if (!canLaunchFromBackground) {
+                postForwardNotification(context, message, resolved, whatsAppMissing = false)
+            }
         } catch (e: Exception) {
-            Log.w(TAG, "Direct launch failed, user must tap notification: ${e.message}")
+            Log.w(TAG, "Direct launch failed, posting fallback notification: ${e.message}")
+            postForwardNotification(context, message, resolved, whatsAppMissing = false)
         }
+    }
+
+    private fun canDrawOverlays(context: Context): Boolean {
+        return Settings.canDrawOverlays(context)
     }
 
     private fun armAutoSend(context: Context, recipient: String, isPhoneNumber: Boolean) {

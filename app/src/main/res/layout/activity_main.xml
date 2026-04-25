@@ -102,6 +102,23 @@
             android:textSize="13sp"
             android:textStyle="bold"
             android:padding="8dp"
+            android:layout_marginBottom="8dp" />
+
+        <Button
+            android:id="@+id/overlayButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Allow Display Over Other Apps"
+            android:layout_marginBottom="8dp" />
+
+        <TextView
+            android:id="@+id/overlayStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Background Launch: NOT ENABLED"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:padding="8dp"
             android:layout_marginBottom="24dp" />
 
         <TextView

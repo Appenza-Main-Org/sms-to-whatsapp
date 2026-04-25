@@ -21,6 +21,9 @@
     <!-- Needed on Android 14+ so the forward notification can open WhatsApp from the background -->
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
 
+    <!-- Lets the SMS receiver launch WhatsApp from background without requiring a notification tap -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
     <!-- Package visibility for WhatsApp (Android 11+) -->
     <queries>
         <package android:name="com.whatsapp" />
