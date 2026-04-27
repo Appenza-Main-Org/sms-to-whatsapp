@@ -25,9 +25,9 @@ class UserPresentReceiver : BroadcastReceiver() {
         val pending = MessageQueue.size(context)
         if (pending == 0) return
         Log.d(TAG, "User unlocked; draining $pending queued forward(s)")
-        // Tiny delay so the home screen has settled before we launch WhatsApp.
+        // Brief delay so the home screen settles before we hammer the bridge.
         Handler(Looper.getMainLooper()).postDelayed(
-            { MessageQueue.drain(context) },
+            { MessageQueue.drainAsync(context) },
             POST_UNLOCK_DELAY_MS
         )
     }

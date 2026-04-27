@@ -1,12 +1,11 @@
 package com.ghareeb.smstowhatsapp
 
-import android.app.KeyguardManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.os.PowerManager
 import android.provider.Telephony
 import android.util.Log
+import kotlin.concurrent.thread
 
 class SMSReceiver : BroadcastReceiver() {
 
@@ -53,13 +52,11 @@ class SMSReceiver : BroadcastReceiver() {
 
         Log.d(TAG, "Received SMS from: $senderStr | Body: $fullBody")
 
-        // Match on sender OR body content (IPN transfers always contain "IPN transfer" phrase)
         if (!matchesFilter(senderStr, fullBody, senderFilter)) {
             Log.d(TAG, "SMS from '$senderStr' does not match filter '$senderFilter'. Ignored.")
             return
         }
 
-        // Duplicate guard: prevent the same message from being re-processed within 5 seconds
         val key = "$senderStr|$fullBody"
         val now = System.currentTimeMillis()
         if (key == lastProcessedKey && (now - lastProcessedTime) < DUPLICATE_WINDOW_MS) {
@@ -69,58 +66,33 @@ class SMSReceiver : BroadcastReceiver() {
         lastProcessedKey = key
         lastProcessedTime = now
 
-        Log.d(TAG, "Sender matches filter. Forwarding to WhatsApp.")
         val formatted = formatMessage(senderStr, fullBody)
+        val baseUrl = prefs.getString(MainActivity.KEY_BRIDGE_URL, MainActivity.DEFAULT_BRIDGE_URL)
 
-        // If the device is locked behind a PIN/pattern/password we cannot drive
-        // WhatsApp's UI — the keyguard sits on top of every activity we launch.
-        // Queue the forward and drain it when the user unlocks (USER_PRESENT).
-        if (isDeviceLocked(context)) {
-            Log.d(TAG, "Device locked — queuing forward for after unlock")
-            MessageQueue.enqueue(context, recipient, formatted)
-            return
-        }
-
-        // Wake the screen before launching WhatsApp. Without a powered display,
-        // WhatsApp's contact-picker rows do not lay out, so the accessibility
-        // service has nothing to click and the user gets stuck on "Send To".
-        wakeScreen(context)
-
-        WhatsAppIntentHelper.sendMessage(context, recipient, formatted)
-    }
-
-    private fun isDeviceLocked(context: Context): Boolean {
-        return try {
-            val km = context.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
-            km.isKeyguardLocked
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to check keyguard state: ${e.message}")
-            false
+        // BroadcastReceivers have a 10s execution window; the HTTP call should
+        // complete in well under that, but pushing it to a background thread
+        // avoids the strict-mode network-on-main-thread crash.
+        val pending = goAsync()
+        thread(name = "ForwardClient", isDaemon = true) {
+            try {
+                val result = ForwardClient.forward(baseUrl, recipient, formatted)
+                when (result) {
+                    is ForwardClient.Result.Ok -> {
+                        Log.d(TAG, "Forwarded to '$recipient'")
+                    }
+                    is ForwardClient.Result.Failed,
+                    is ForwardClient.Result.NetworkError -> {
+                        Log.w(TAG, "Forward failed; queuing for retry: $result")
+                        MessageQueue.enqueue(context, recipient, formatted)
+                        ForwardRetryScheduler.scheduleSoon(context)
+                    }
+                }
+            } finally {
+                pending.finish()
+            }
         }
     }
 
-    private fun wakeScreen(context: Context) {
-        try {
-            val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
-            @Suppress("DEPRECATION")
-            val wakeLock = pm.newWakeLock(
-                PowerManager.SCREEN_BRIGHT_WAKE_LOCK or
-                    PowerManager.ACQUIRE_CAUSES_WAKEUP or
-                    PowerManager.ON_AFTER_RELEASE,
-                "SMSToWhatsApp::ForwardWakeLock"
-            )
-            wakeLock.acquire(15_000L)
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to acquire wake lock: ${e.message}")
-        }
-    }
-
-    /**
-     * Matches against sender OR body content using comma-separated filter list.
-     * Each filter entry is matched as a substring (case-insensitive) in either
-     * the sender address or the message body. This catches IPN transfers
-     * whether they come from "InstaPay", "IPN", or any bank sender ID.
-     */
     private fun matchesFilter(sender: String, body: String, filter: String): Boolean {
         val filters = filter.split(",").map { it.trim() }.filter { it.isNotEmpty() }
         return filters.any {
@@ -128,12 +100,7 @@ class SMSReceiver : BroadcastReceiver() {
         }
     }
 
-    /**
-     * Formats the outgoing WhatsApp message — parses IPN transfer details
-     * when possible, otherwise falls back to raw body.
-     */
     private fun formatMessage(sender: String, body: String): String {
-        // Try to parse IPN transfer details
         val amount = Regex("EGP\\s*([0-9,.]+)", RegexOption.IGNORE_CASE).find(body)?.groupValues?.get(1)
         val account = Regex("on\\s+(\\d{4,})\\s+on", RegexOption.IGNORE_CASE).find(body)?.groupValues?.get(1)
         val date = Regex("on\\s+(\\d{2}/\\d{2})\\s+at", RegexOption.IGNORE_CASE).find(body)?.groupValues?.get(1)

@@ -16,14 +16,14 @@
             android:text="SMS to WhatsApp"
             android:textSize="28sp"
             android:textStyle="bold"
-            android:layout_marginBottom="8dp" />
+            android:layout_marginBottom="4dp" />
 
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Forwards matching SMS to WhatsApp automatically"
+            android:text="Bridges matching SMS to a WhatsApp group via a local Baileys server"
             android:textSize="14sp"
-            android:layout_marginBottom="24dp" />
+            android:layout_marginBottom="20dp" />
 
         <TextView
             android:id="@+id/statusText"
@@ -34,7 +34,7 @@
             android:textStyle="bold"
             android:padding="12dp"
             android:background="#E3F2FD"
-            android:layout_marginBottom="24dp" />
+            android:layout_marginBottom="20dp" />
 
         <TextView
             android:layout_width="match_parent"
@@ -54,7 +54,7 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Recipient: enter a phone number with country code (e.g. 201234567890) for direct chat, OR leave as GROUP / any non-numeric text to open WhatsApp share sheet and pick a group"
+            android:text="Recipient WhatsApp group name (exact, case-insensitive)"
             android:textSize="14sp"
             android:layout_marginBottom="4dp" />
 
@@ -64,7 +64,38 @@
             android:layout_height="wrap_content"
             android:hint="MAHFOUZ IPN instapay revise"
             android:inputType="text"
-            android:layout_marginBottom="24dp" />
+            android:layout_marginBottom="16dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Bridge URL (Baileys server running in Termux on this phone)"
+            android:textSize="14sp"
+            android:layout_marginBottom="4dp" />
+
+        <EditText
+            android:id="@+id/bridgeUrl"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="http://127.0.0.1:3000"
+            android:inputType="textUri"
+            android:layout_marginBottom="8dp" />
+
+        <Button
+            android:id="@+id/testConnectionButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Test Bridge Connection"
+            android:layout_marginBottom="4dp" />
+
+        <TextView
+            android:id="@+id/bridgeStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Queue: empty"
+            android:textSize="13sp"
+            android:padding="8dp"
+            android:layout_marginBottom="20dp" />
 
         <Button
             android:id="@+id/startButton"
@@ -85,46 +116,12 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="Disable Battery Optimization"
-            android:layout_marginBottom="8dp" />
-
-        <Button
-            android:id="@+id/accessibilityButton"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="Enable Auto-Send (Accessibility)"
-            android:layout_marginBottom="8dp" />
-
-        <TextView
-            android:id="@+id/accessibilityStatus"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="Auto-Send: NOT ENABLED"
-            android:textSize="13sp"
-            android:textStyle="bold"
-            android:padding="8dp"
-            android:layout_marginBottom="8dp" />
-
-        <Button
-            android:id="@+id/overlayButton"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="Allow Display Over Other Apps"
-            android:layout_marginBottom="8dp" />
-
-        <TextView
-            android:id="@+id/overlayStatus"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="Background Launch: NOT ENABLED"
-            android:textSize="13sp"
-            android:textStyle="bold"
-            android:padding="8dp"
-            android:layout_marginBottom="24dp" />
+            android:layout_marginBottom="20dp" />
 
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="How it works: Enter the exact WhatsApp group name (e.g. Test Group) or a phone number with country code. When a matching SMS arrives, WhatsApp opens with the message pre-filled. If Auto-Send is enabled, the accessibility service will automatically pick the named group and tap Send — no manual taps. If Auto-Send is off, a notification lets you tap to complete the send yourself."
+            android:text="How it works: When a matching SMS arrives, the app POSTs it to the local Baileys server, which sends it to the named WhatsApp group via the multi-device protocol. Works regardless of phone screen state. Run the server in Termux and pair once via QR code."
             android:textSize="12sp"
             android:textStyle="italic" />
 

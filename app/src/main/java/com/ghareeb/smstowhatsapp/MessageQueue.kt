@@ -1,16 +1,14 @@
 package com.ghareeb.smstowhatsapp
 
 import android.content.Context
-import android.os.Handler
-import android.os.Looper
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlin.concurrent.thread
 
 /**
- * Persists pending forwards in SharedPreferences when the device is locked,
- * then drains them one-by-one once the user unlocks. Avoids losing IPN
- * notifications that arrive while the phone is asleep & PIN-locked.
+ * Persists pending forwards in SharedPreferences when the bridge is unreachable
+ * (Termux not running, network blip, etc.) and retries them on a schedule.
  */
 object MessageQueue {
 
@@ -20,7 +18,6 @@ object MessageQueue {
     private const val FIELD_MESSAGE = "message"
     private const val FIELD_TIMESTAMP = "ts"
 
-    private const val INTER_SEND_GAP_MS = 25_000L
     private const val MAX_QUEUE_AGE_MS = 6 * 60 * 60 * 1000L
 
     fun enqueue(context: Context, recipient: String, message: String) {
@@ -40,27 +37,58 @@ object MessageQueue {
         return readQueue(prefs).length()
     }
 
-    fun drain(context: Context) {
+    /**
+     * Walks the queue, sending each entry via [ForwardClient]. Stops at the
+     * first network failure so we don't blast the server while it's still
+     * unreachable. Caller should reschedule itself if any entries remain.
+     */
+    fun drain(context: Context): Boolean {
         val prefs = context.getSharedPreferences(MainActivity.PREFS_NAME, Context.MODE_PRIVATE)
         var arr = pruneStale(readQueue(prefs))
         writeQueue(prefs, arr)
-        if (arr.length() == 0) return
+        if (arr.length() == 0) return true
 
-        val entry = arr.getJSONObject(0)
-        val recipient = entry.getString(FIELD_RECIPIENT)
-        val message = entry.getString(FIELD_MESSAGE)
+        val baseUrl = prefs.getString(MainActivity.KEY_BRIDGE_URL, MainActivity.DEFAULT_BRIDGE_URL)
+        var allSent = true
 
-        arr = removeFirst(arr)
-        writeQueue(prefs, arr)
+        while (arr.length() > 0) {
+            val entry = arr.getJSONObject(0)
+            val recipient = entry.getString(FIELD_RECIPIENT)
+            val message = entry.getString(FIELD_MESSAGE)
 
-        Log.d(TAG, "Draining 1 message to '$recipient' (${arr.length()} remaining)")
-        WhatsAppIntentHelper.sendMessage(context, recipient, message)
+            val result = ForwardClient.forward(baseUrl, recipient, message)
+            when (result) {
+                is ForwardClient.Result.Ok -> {
+                    Log.d(TAG, "Drained 1 entry to '$recipient'")
+                    arr = removeFirst(arr)
+                    writeQueue(prefs, arr)
+                }
+                is ForwardClient.Result.Failed -> {
+                    // 4xx that's not a network problem — drop the entry so we
+                    // don't keep retrying a permanently bad request (e.g. the
+                    // group name doesn't exist). Server logs explain.
+                    Log.w(TAG, "Server rejected entry (${result.code}): ${result.body}; dropping")
+                    arr = removeFirst(arr)
+                    writeQueue(prefs, arr)
+                    allSent = false
+                }
+                is ForwardClient.Result.NetworkError -> {
+                    Log.d(TAG, "Bridge unreachable; will retry later")
+                    allSent = false
+                    break
+                }
+            }
+        }
+        return allSent
+    }
 
-        if (arr.length() > 0) {
-            Handler(Looper.getMainLooper()).postDelayed(
-                { drain(context) },
-                INTER_SEND_GAP_MS
-            )
+    fun drainAsync(context: Context) {
+        thread(name = "MessageQueue.drain", isDaemon = true) {
+            try {
+                drain(context)
+            } catch (t: Throwable) {
+                Log.w(TAG, "Drain crashed: ${t.message}")
+            }
         }
     }
 

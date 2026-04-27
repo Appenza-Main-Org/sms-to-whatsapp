@@ -1,8 +1,6 @@
 package com.ghareeb.smstowhatsapp
 
 import android.Manifest
-import android.content.ComponentName
-import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
@@ -11,8 +9,6 @@ import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
-import android.text.TextUtils
-import android.view.accessibility.AccessibilityManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
@@ -20,19 +16,22 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
+import kotlin.concurrent.thread
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var senderFilterEditText: EditText
     private lateinit var recipientEditText: EditText
+    private lateinit var bridgeUrlEditText: EditText
     private lateinit var startButton: Button
     private lateinit var stopButton: Button
-    private lateinit var statusText: TextView
     private lateinit var batteryButton: Button
-    private lateinit var accessibilityButton: Button
-    private lateinit var accessibilityStatus: TextView
-    private lateinit var overlayButton: Button
-    private lateinit var overlayStatus: TextView
+    private lateinit var testConnectionButton: Button
+    private lateinit var statusText: TextView
+    private lateinit var bridgeStatusText: TextView
     private lateinit var prefs: SharedPreferences
 
     companion object {
@@ -40,14 +39,13 @@ class MainActivity : AppCompatActivity() {
         const val KEY_SENDER_FILTER = "sender_filter"
         const val KEY_RECIPIENT = "recipient"
         const val KEY_IS_RUNNING = "is_running"
+        const val KEY_BRIDGE_URL = "bridge_url"
         const val PERMISSION_REQUEST_CODE = 100
 
         const val DEFAULT_RECIPIENT = "MAHFOUZ IPN instapay revise"
         const val DEFAULT_SENDER_FILTER = "InstaPay,IPN"
+        const val DEFAULT_BRIDGE_URL = "http://127.0.0.1:3000"
 
-        // Recipients we historically auto-populated; any of these should be
-        // migrated to DEFAULT_RECIPIENT so existing installs pick up the new
-        // default. Anything the user typed themselves is preserved.
         private val LEGACY_RECIPIENTS = setOf("GROUP", "Pharmacy", "Test Group")
     }
 
@@ -60,58 +58,25 @@ class MainActivity : AppCompatActivity() {
 
         senderFilterEditText = findViewById(R.id.senderFilter)
         recipientEditText = findViewById(R.id.recipient)
+        bridgeUrlEditText = findViewById(R.id.bridgeUrl)
         startButton = findViewById(R.id.startButton)
         stopButton = findViewById(R.id.stopButton)
-        statusText = findViewById(R.id.statusText)
         batteryButton = findViewById(R.id.batteryButton)
-        accessibilityButton = findViewById(R.id.accessibilityButton)
-        accessibilityStatus = findViewById(R.id.accessibilityStatus)
-        overlayButton = findViewById(R.id.overlayButton)
-        overlayStatus = findViewById(R.id.overlayStatus)
+        testConnectionButton = findViewById(R.id.testConnectionButton)
+        statusText = findViewById(R.id.statusText)
+        bridgeStatusText = findViewById(R.id.bridgeStatus)
 
         senderFilterEditText.setText(prefs.getString(KEY_SENDER_FILTER, DEFAULT_SENDER_FILTER))
         recipientEditText.setText(prefs.getString(KEY_RECIPIENT, DEFAULT_RECIPIENT))
+        bridgeUrlEditText.setText(prefs.getString(KEY_BRIDGE_URL, DEFAULT_BRIDGE_URL))
         updateStatus()
 
         startButton.setOnClickListener { requestPermissions() }
-
-        stopButton.setOnClickListener {
-            stopService(Intent(this, SMSListenerService::class.java))
-            prefs.edit().putBoolean(KEY_IS_RUNNING, false).apply()
-            updateStatus()
-            Toast.makeText(this, "SMS listener stopped", Toast.LENGTH_SHORT).show()
-        }
-
+        stopButton.setOnClickListener { stopListener() }
         batteryButton.setOnClickListener { requestBatteryOptimizationExemption() }
-
-        accessibilityButton.setOnClickListener {
-            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-            Toast.makeText(
-                this,
-                "Find 'SMS to WhatsApp' in the list and enable it",
-                Toast.LENGTH_LONG
-            ).show()
-        }
-
-        overlayButton.setOnClickListener {
-            val intent = Intent(
-                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                Uri.parse("package:$packageName")
-            )
-            startActivity(intent)
-            Toast.makeText(
-                this,
-                "Toggle 'Allow display over other apps' ON",
-                Toast.LENGTH_LONG
-            ).show()
-        }
+        testConnectionButton.setOnClickListener { testBridgeConnection() }
     }
 
-    /**
-     * Replaces the saved recipient with [DEFAULT_RECIPIENT] when it is unset or
-     * still holds one of the historical placeholder values. Anything the user
-     * has typed themselves is left alone.
-     */
     private fun migrateLegacyRecipient() {
         val saved = prefs.getString(KEY_RECIPIENT, null)
         if (saved == null || saved.trim() in LEGACY_RECIPIENTS) {
@@ -122,35 +87,16 @@ class MainActivity : AppCompatActivity() {
     private fun updateStatus() {
         val running = prefs.getBoolean(KEY_IS_RUNNING, false)
         statusText.text = if (running) "Status: RUNNING" else "Status: STOPPED"
-
-        val enabled = isAccessibilityServiceEnabled()
-        accessibilityStatus.text = if (enabled) "Auto-Send: ENABLED" else "Auto-Send: NOT ENABLED — tap button above"
-
-        val overlayEnabled = Settings.canDrawOverlays(this)
-        overlayStatus.text = if (overlayEnabled) "Background Launch: ENABLED" else "Background Launch: NOT ENABLED — tap button above"
+        val pending = MessageQueue.size(this)
+        bridgeStatusText.text = if (pending > 0) "Queue: $pending pending" else "Queue: empty"
     }
 
-    private fun isAccessibilityServiceEnabled(): Boolean {
-        val expected = ComponentName(this, WhatsAppAutoSendService::class.java).flattenToString()
-        val enabledSetting = Settings.Secure.getString(
-            contentResolver,
-            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
-        ) ?: return false
-
-        val splitter = TextUtils.SimpleStringSplitter(':')
-        splitter.setString(enabledSetting)
-        while (splitter.hasNext()) {
-            val component = splitter.next()
-            if (component.equals(expected, ignoreCase = true)) return true
-            // Also accept short form (package/class) that some OEMs use
-            val short = ComponentName(this, WhatsAppAutoSendService::class.java).flattenToShortString()
-            if (component.equals(short, ignoreCase = true)) return true
-        }
-
-        // Cross-check via AccessibilityManager (more authoritative on some OEMs)
-        val am = getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
-        return am.getEnabledAccessibilityServiceList(android.accessibilityservice.AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
-            .any { it.id.contains(packageName, ignoreCase = true) && it.id.contains("WhatsAppAutoSendService", ignoreCase = true) }
+    private fun stopListener() {
+        stopService(Intent(this, SMSListenerService::class.java))
+        prefs.edit().putBoolean(KEY_IS_RUNNING, false).apply()
+        ForwardRetryScheduler.cancel(this)
+        updateStatus()
+        Toast.makeText(this, "SMS listener stopped", Toast.LENGTH_SHORT).show()
     }
 
     private fun requestPermissions() {
@@ -159,7 +105,6 @@ class MainActivity : AppCompatActivity() {
             Manifest.permission.READ_SMS,
             Manifest.permission.INTERNET
         )
-
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissions.add(Manifest.permission.POST_NOTIFICATIONS)
         }
@@ -193,6 +138,7 @@ class MainActivity : AppCompatActivity() {
     private fun startListener() {
         val senderFilter = senderFilterEditText.text.toString().trim()
         val recipient = recipientEditText.text.toString().trim()
+        val bridgeUrl = bridgeUrlEditText.text.toString().trim().trimEnd('/')
 
         if (senderFilter.isEmpty() || recipient.isEmpty()) {
             Toast.makeText(this, "Please fill sender and recipient", Toast.LENGTH_SHORT).show()
@@ -202,6 +148,7 @@ class MainActivity : AppCompatActivity() {
         prefs.edit()
             .putString(KEY_SENDER_FILTER, senderFilter)
             .putString(KEY_RECIPIENT, recipient)
+            .putString(KEY_BRIDGE_URL, bridgeUrl.ifEmpty { DEFAULT_BRIDGE_URL })
             .putBoolean(KEY_IS_RUNNING, true)
             .apply()
 
@@ -213,13 +160,43 @@ class MainActivity : AppCompatActivity() {
         }
 
         updateStatus()
+        Toast.makeText(this, "Listener started — bridge: $bridgeUrl", Toast.LENGTH_LONG).show()
+    }
 
-        val hint = when {
-            isAccessibilityServiceEnabled() -> "Listener started — full auto-send active"
-            Settings.canDrawOverlays(this) -> "Started. Enable Auto-Send below to skip the manual group/send tap"
-            else -> "Started. Enable Auto-Send below for hands-free forwarding"
+    /**
+     * Performs a GET on the bridge's /health endpoint and reports the result.
+     * Lets the user verify Termux/Baileys is up before relying on it.
+     */
+    private fun testBridgeConnection() {
+        val baseUrl = bridgeUrlEditText.text.toString().trim().trimEnd('/').ifEmpty { DEFAULT_BRIDGE_URL }
+        bridgeStatusText.text = "Testing $baseUrl ..."
+
+        thread(name = "BridgeHealthCheck", isDaemon = true) {
+            val (msg, ok) = try {
+                val url = URL("$baseUrl/health")
+                val conn = url.openConnection() as HttpURLConnection
+                conn.connectTimeout = 5_000
+                conn.readTimeout = 5_000
+                val code = conn.responseCode
+                val body = conn.inputStream.bufferedReader().use { it.readText() }
+                conn.disconnect()
+                if (code == 200) {
+                    val json = JSONObject(body)
+                    val ready = json.optBoolean("ready", false)
+                    val groups = json.optInt("groups", 0)
+                    if (ready) "✅ Bridge ready — $groups groups linked" to true
+                    else "⚠️ Bridge running but WhatsApp not paired yet" to false
+                } else {
+                    "❌ Bridge returned HTTP $code" to false
+                }
+            } catch (t: Throwable) {
+                "❌ Bridge unreachable: ${t.message ?: t.javaClass.simpleName}" to false
+            }
+            runOnUiThread {
+                bridgeStatusText.text = msg
+                Toast.makeText(this, msg, if (ok) Toast.LENGTH_SHORT else Toast.LENGTH_LONG).show()
+            }
         }
-        Toast.makeText(this, hint, Toast.LENGTH_LONG).show()
     }
 
     private fun requestBatteryOptimizationExemption() {
