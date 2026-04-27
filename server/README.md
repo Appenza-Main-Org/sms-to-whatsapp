@@ -41,15 +41,28 @@ able to reach the bridge URL.
    npm install
    ```
 
-5. **Run the server:**
+5. **Run the server.** Two pairing modes — pick whichever fits:
+
+   **Pairing-code mode (recommended for single-phone setups)** — no
+   camera/QR needed. Substitute your WhatsApp phone number in E.164
+   form (digits only, country code first; example below is Egypt):
+
+   ```sh
+   PHONE_NUMBER=201234567890 npm start
+   ```
+
+   The server prints an 8-character code like `ABCD-EFGH`. On the same
+   phone, open WhatsApp → **Settings → Linked Devices → Link a Device**
+   → tap **"Link with phone number instead"** at the bottom → enter the
+   code. Pairing credentials are saved in `./auth/` so subsequent
+   starts skip this.
+
+   **QR mode** — only practical if you have a second device showing the
+   QR while you scan from your phone:
 
    ```sh
    npm start
    ```
-
-   First run prints a QR code. Open WhatsApp on your phone →
-   **Settings → Linked Devices → Link a Device** → scan the QR. Pairing
-   credentials are saved in `./auth/` so subsequent starts skip the QR.
 
    Once paired you should see:
 
@@ -80,6 +93,8 @@ cat > ~/.termux/boot/start-bridge <<'SH'
 #!/data/data/com.termux/files/usr/bin/sh
 termux-wake-lock
 cd ~/sms-to-whatsapp/server
+# After first pairing the auth/ dir holds the session, so PHONE_NUMBER
+# isn't strictly needed on later starts — but leaving it set is harmless.
 node index.js >> ~/bridge.log 2>&1 &
 SH
 chmod +x ~/.termux/boot/start-bridge

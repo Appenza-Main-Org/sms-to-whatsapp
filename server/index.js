@@ -25,9 +25,14 @@ const qrcode = require("qrcode-terminal");
 const PORT = parseInt(process.env.PORT || "3000", 10);
 const HOST = process.env.HOST || "127.0.0.1";
 const AUTH_DIR = process.env.AUTH_DIR || "./auth";
+// If set, link via pairing code instead of QR. Use E.164 form WITHOUT '+' or
+// spaces, e.g. "201234567890" for an Egyptian number. Avoids the impossible
+// "scan-QR-on-same-phone" dance.
+const PHONE_NUMBER = (process.env.PHONE_NUMBER || "").replace(/[^\d]/g, "");
 
 let sock = null;
 let connectionReady = false;
+let pairingCodeRequested = false;
 let groupCache = new Map(); // normalized name -> jid
 
 function normalize(s) {
@@ -66,12 +71,41 @@ async function startWA() {
     browser: ["SMS-to-WhatsApp", "Chrome", "1.0"],
   });
 
+  // Pairing-code path: request the 8-character code as soon as the socket is
+  // ready, BEFORE the QR pump kicks in. WhatsApp shows this code field at
+  // Settings → Linked Devices → Link a Device → "Link with phone number".
+  if (PHONE_NUMBER && !sock.authState.creds.registered && !pairingCodeRequested) {
+    pairingCodeRequested = true;
+    setTimeout(async () => {
+      try {
+        const code = await sock.requestPairingCode(PHONE_NUMBER);
+        const formatted = code.match(/.{1,4}/g).join("-");
+        console.log("\n┌──────────────────────────────────────────────────────┐");
+        console.log("│                                                      │");
+        console.log(`│   🔑 Pairing code: ${formatted}                          │`);
+        console.log("│                                                      │");
+        console.log("│   On your phone, open WhatsApp:                      │");
+        console.log("│   Settings → Linked Devices → Link a Device          │");
+        console.log("│   → tap 'Link with phone number instead'             │");
+        console.log(`│   → enter the code above                             │`);
+        console.log("│                                                      │");
+        console.log("└──────────────────────────────────────────────────────┘\n");
+      } catch (err) {
+        console.error("Failed to request pairing code:", err.message);
+        console.error(
+          "Falling back to QR. Set PHONE_NUMBER correctly (E.164, digits only) to retry."
+        );
+      }
+    }, 3000);
+  }
+
   sock.ev.on("creds.update", saveCreds);
 
   sock.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
-    if (qr) {
+    // Only render QR if we're NOT using the pairing-code flow
+    if (qr && !PHONE_NUMBER) {
       console.log("\n📱 Scan this QR code with your phone:");
       console.log("   WhatsApp → Settings → Linked Devices → Link a Device\n");
       qrcode.generate(qr, { small: true });
