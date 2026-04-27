@@ -1,5 +1,6 @@
 package com.ghareeb.smstowhatsapp
 
+import android.app.KeyguardManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -71,12 +72,31 @@ class SMSReceiver : BroadcastReceiver() {
         Log.d(TAG, "Sender matches filter. Forwarding to WhatsApp.")
         val formatted = formatMessage(senderStr, fullBody)
 
+        // If the device is locked behind a PIN/pattern/password we cannot drive
+        // WhatsApp's UI — the keyguard sits on top of every activity we launch.
+        // Queue the forward and drain it when the user unlocks (USER_PRESENT).
+        if (isDeviceLocked(context)) {
+            Log.d(TAG, "Device locked — queuing forward for after unlock")
+            MessageQueue.enqueue(context, recipient, formatted)
+            return
+        }
+
         // Wake the screen before launching WhatsApp. Without a powered display,
         // WhatsApp's contact-picker rows do not lay out, so the accessibility
         // service has nothing to click and the user gets stuck on "Send To".
         wakeScreen(context)
 
         WhatsAppIntentHelper.sendMessage(context, recipient, formatted)
+    }
+
+    private fun isDeviceLocked(context: Context): Boolean {
+        return try {
+            val km = context.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+            km.isKeyguardLocked
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to check keyguard state: ${e.message}")
+            false
+        }
     }
 
     private fun wakeScreen(context: Context) {

@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.SharedPreferences
 import android.graphics.Path
 import android.graphics.Rect
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -147,11 +148,12 @@ class WhatsAppAutoSendService : AccessibilityService() {
                         lastClickedTarget = target
                         return
                     }
-                    // Don't scroll. The contact picker is still painting on the
-                    // first few retries — scrolling pushes the target out of view
-                    // before we get a chance to click it. Targets in Recents /
-                    // Frequently are visible without any scroll, and the retry
-                    // schedule (up to 4.5s) gives the tree time to populate.
+                    // Direct row click didn't work — fall back to WhatsApp's
+                    // built-in search. We click the magnifier icon, then type
+                    // the target name into the search EditText. The next retry
+                    // will see the filtered list (single result) and clickTargetChat
+                    // will succeed.
+                    if (driveSearchFlow(root, target)) return
                     return
                 }
 
@@ -235,6 +237,10 @@ class WhatsAppAutoSendService : AccessibilityService() {
 
         // Layer 1: exact match (with optional emoji/decoration prefix).
         walkTree(root) { n ->
+            // Don't match the search EditText itself — once we've typed the
+            // target into search, its text equals our target and we'd try to
+            // "click" it, opening a useless cursor placement.
+            if (n.className?.toString() == "android.widget.EditText") return@walkTree
             val nText = normalize(n.text?.toString())
             if (nText.isEmpty()) return@walkTree
             if (nText == normalized) {
@@ -255,6 +261,7 @@ class WhatsAppAutoSendService : AccessibilityService() {
             if (firstWord != null && firstWord.length >= 3) {
                 val candidates = root.findAccessibilityNodeInfosByText(firstWord) ?: emptyList()
                 for (n in candidates) {
+                    if (n.className?.toString() == "android.widget.EditText") continue
                     val nText = normalize(n.text?.toString())
                     if (nText.isNotEmpty() && nText.contains(normalized)) {
                         matches.add(n)
@@ -334,6 +341,76 @@ class WhatsAppAutoSendService : AccessibilityService() {
             depth++
         }
         return null
+    }
+
+    /**
+     * Drives WhatsApp's built-in search to filter the contact picker down to
+     * just the target group. Stateless — every retry re-evaluates the screen
+     * and either clicks the search icon or types into the search field.
+     *
+     * Returns true if it took an action this tick.
+     */
+    private fun driveSearchFlow(root: AccessibilityNodeInfo, target: String): Boolean {
+        val editText = findSearchEditText(root)
+        if (editText != null) {
+            val current = editText.text?.toString() ?: ""
+            if (normalize(current) == normalize(target)) {
+                // Search already filtered; the next retry's clickTargetChat
+                // will see and click the result.
+                return false
+            }
+            val args = Bundle().apply {
+                putCharSequence(
+                    AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+                    target
+                )
+            }
+            if (editText.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) {
+                Log.d(TAG, "Typed '$target' into WhatsApp search field")
+                return true
+            }
+            return false
+        }
+
+        val searchIcon = findSearchIcon(root) ?: return false
+        if (tryClickWithAncestors(searchIcon)) {
+            Log.d(TAG, "Clicked WhatsApp search icon")
+            return true
+        }
+        if (gestureTap(searchIcon)) {
+            Log.d(TAG, "Gesture-tapped WhatsApp search icon")
+            return true
+        }
+        return false
+    }
+
+    private fun findSearchIcon(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val ids = listOf(
+            "com.whatsapp:id/menuitem_search",
+            "com.whatsapp:id/action_search",
+            "com.whatsapp:id/search",
+            "com.whatsapp.w4b:id/menuitem_search",
+            "com.whatsapp.w4b:id/action_search",
+            "com.whatsapp.w4b:id/search"
+        )
+        for (id in ids) {
+            val nodes = root.findAccessibilityNodeInfosByViewId(id) ?: continue
+            for (n in nodes) {
+                if (n.isVisibleToUser) return n
+            }
+        }
+        return findNode(root) { n ->
+            val desc = n.contentDescription?.toString() ?: return@findNode false
+            (desc.equals("Search", ignoreCase = true) ||
+                desc.equals("Search chats", ignoreCase = true)) &&
+                n.isVisibleToUser
+        }
+    }
+
+    private fun findSearchEditText(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        return findNode(root) { n ->
+            n.className?.toString() == "android.widget.EditText" && n.isVisibleToUser
+        }
     }
 
     /**

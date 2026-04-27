@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
@@ -25,10 +26,26 @@ class SMSListenerService : Service() {
         private const val CHANNEL_NAME = "SMS Listener Service"
     }
 
+    private val userPresentReceiver = UserPresentReceiver()
+
     override fun onCreate() {
         super.onCreate()
         Log.d(TAG, "Service created")
         createNotificationChannel()
+        // ACTION_USER_PRESENT can't be received via static manifest registration
+        // on Android 8+, so we register dynamically while this foreground
+        // service is alive. That's enough to drain queued forwards on unlock.
+        try {
+            val filter = IntentFilter(Intent.ACTION_USER_PRESENT)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(userPresentReceiver, filter, RECEIVER_NOT_EXPORTED)
+            } else {
+                @Suppress("UnspecifiedRegisterReceiverFlag")
+                registerReceiver(userPresentReceiver, filter)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to register UserPresentReceiver: ${e.message}")
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -85,6 +102,10 @@ class SMSListenerService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        try {
+            unregisterReceiver(userPresentReceiver)
+        } catch (_: Exception) {
+        }
         super.onDestroy()
         Log.d(TAG, "Service destroyed - restart will be attempted")
     }

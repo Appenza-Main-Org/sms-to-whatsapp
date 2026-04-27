@@ -16,3 +16,4 @@ build/
 *.dex
 *.class
 /keystores/
+.vscode/
